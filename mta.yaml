@@ -38,6 +38,7 @@ modules:
         - npm install --prefix ../react-ui
         - npm run build --prefix ../react-ui
         - npx -p shx shx cp -r ../react-ui/dist ./react-ui-dist
+      build-result: .
     requires:
       - name: srv-api
         group: destinations
