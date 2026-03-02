@@ -3,11 +3,11 @@ const cds = require('@sap/cds');
 cds.on('bootstrap', (app) => {
     if (process.env.NODE_ENV === 'production') {
         const passport = require('passport');
-        const { JWTStrategy } = require('@sap/xssec');
+        const { XssecPassportStrategy, XsuaaService } = require('@sap/xssec');
         const xsenv = require('@sap/xsenv');
         try {
             const services = xsenv.getServices({ uaa: { tag: 'xsuaa' } });
-            passport.use(new JWTStrategy(services.uaa));
+            passport.use('JWT', new XssecPassportStrategy(new XsuaaService(services.uaa)));
             app.use('/api', passport.initialize());
             app.use('/api', passport.authenticate('JWT', { session: false }));
         } catch (error) {
