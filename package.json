@@ -4,8 +4,10 @@
   "description": "A simple CAP project.",
   "dependencies": {
     "@sap/cds": "^9",
+    "@sap/xsenv": "^6.1.0",
+    "@sap/xssec": "^4",
     "express": "^4",
-    "@sap/xssec": "^4"
+    "passport": "^0.7.0"
   },
   "devDependencies": {
     "@cap-js/sqlite": "^2",

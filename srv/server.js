@@ -1,6 +1,20 @@
 const cds = require('@sap/cds');
 
 cds.on('bootstrap', (app) => {
+    if (process.env.NODE_ENV === 'production') {
+        const passport = require('passport');
+        const { JWTStrategy } = require('@sap/xssec');
+        const xsenv = require('@sap/xsenv');
+        try {
+            const services = xsenv.getServices({ uaa: { tag: 'xsuaa' } });
+            passport.use(new JWTStrategy(services.uaa));
+            app.use('/api', passport.initialize());
+            app.use('/api', passport.authenticate('JWT', { session: false }));
+        } catch (error) {
+            console.error('[auth] Error setting up XSUAA JWT Strategy:', error);
+        }
+    }
+
     // Return user info and handle CSRF token fetch from approuter
     app.get('/api/me', (req, res) => {
         // req.user is populated by basic authentication for local dev
