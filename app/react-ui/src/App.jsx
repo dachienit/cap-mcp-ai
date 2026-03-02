@@ -86,10 +86,14 @@ function App() {
         </div>
       )}
 
-      {csrfToken && (
+      {userInfo && (
         <div style={{ marginTop: '2rem', padding: '1rem', borderTop: '1px solid #eee' }}>
           <h3>BOM External Data Fetch (OData)</h3>
-          <p style={{ fontSize: '0.9em', color: '#555' }}>CSRF Token stored: <code>{csrfToken.substring(0, 10)}...</code></p>
+          {csrfToken ? (
+            <p style={{ fontSize: '0.9em', color: '#555' }}>CSRF Token stored: <code>{csrfToken.substring(0, 10)}...</code></p>
+          ) : (
+            <p style={{ fontSize: '0.9em', color: '#888' }}><em>Local Dev Mode: No CSRF token required.</em></p>
+          )}
 
           <div style={{ marginBottom: '10px' }}>
             <label style={{ marginRight: '10px' }}><strong>BTP Destination Name:</strong></label>
