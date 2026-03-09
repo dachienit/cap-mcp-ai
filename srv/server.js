@@ -18,21 +18,66 @@ cds.on('bootstrap', (app) => {
     const express = require('express');
     app.use(express.json());
 
-    // ─── Helper: get user JWT from request ───────────────────────────────────────
+    // ─── Helper: get user JWT for Principal Propagation ─────────────────────────
+    // Priority: req.authInfo.getToken() = raw XSUAA JWT (correct for PP)
+    // Fallback: Authorization header (may be approuter session token)
     function getUserJwt(req) {
+        // authInfo.getToken() returns the original XSUAA JWT from the user's session
+        // This is what SAP Cloud SDK needs for Principal Propagation to on-prem
+        if (req.authInfo && typeof req.authInfo.getToken === 'function') {
+            const token = req.authInfo.getToken();
+            if (token) return token;
+        }
         const authHeader = req.headers.authorization;
         return authHeader && authHeader.startsWith('Bearer ')
             ? authHeader.substring(7)
-            : (req.authInfo && req.authInfo.getToken ? req.authInfo.getToken() : null);
+            : null;
     }
 
-    // ─── Helper: call ADT API via SAP Cloud SDK (production) ─────────────────────
+    // ─── Helper: call ADT API via SAP Cloud SDK ───────────────────────────────────
     async function callAdt(destinationName, jwt, options) {
         const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
-        return executeHttpRequest(
-            { destinationName, jwt },
-            options
-        );
+        try {
+            return await executeHttpRequest(
+                {
+                    destinationName,
+                    jwt,
+                    // suppressErrorHandlerExecution: allow us to handle errors ourselves
+                },
+                {
+                    ...options,
+                    // Ensure axios doesn't throw on 4xx so we can inspect response
+                }
+            );
+        } catch (err) {
+            // Enrich error with downstream status for proper forwarding
+            const downstreamStatus = err.response?.status || err.cause?.response?.status;
+            const downstreamBody = err.response?.data || err.cause?.response?.data;
+            if (downstreamStatus) {
+                err.downstreamStatus = downstreamStatus;
+                err.downstreamBody = downstreamBody;
+            }
+            throw err;
+        }
+    }
+
+    // ─── Helper: build standardized error response ────────────────────────────────
+    function handleAdtError(res, err, endpoint) {
+        const downstream = err.downstreamStatus;
+        const status = downstream || 500;
+        const body = {
+            error: err.message,
+            downstream: err.downstreamBody,
+            endpoint
+        };
+        console.error(`[adt/${endpoint}] Error (HTTP ${status}):`, err.message);
+        if (err.downstreamBody) {
+            console.error(`[adt/${endpoint}] Downstream body:`, JSON.stringify(err.downstreamBody).substring(0, 500));
+        }
+        if (err.stack) {
+            console.error(`[adt/${endpoint}] Stack:`, err.stack.split('\n').slice(0, 5).join('\n'));
+        }
+        return res.status(status).json(body);
     }
 
     // ─── Helper: fetch ADT CSRF token from on-prem ───────────────────────────────
@@ -120,27 +165,55 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
-            let url = `/sap/adt/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}*&maxResults=${maxResults}`;
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/search] user=${logonName}, dest=${destinationName}, query=${query}, jwt_present=${!!jwt}`);
+
+            let url = `/sap/adt/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&reposistoryScope=ALL`;
             if (objectType) url += `&objectType=${encodeURIComponent(objectType)}`;
 
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url,
-                headers: { Accept: 'application/xml' }
+                headers: {
+                    // ADT search result format
+                    'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml',
+                    'sap-client': process.env.SAP_CLIENT || ''
+                }
             });
 
-            // ADT returns XML — parse relevant fields
-            const xml = response.data;
-            // Simple regex extraction for demo; production should use xml2js
+            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+            console.log(`[adt/search] response status=${response.status}, body_length=${xml.length}`);
+
+            // Parse ADT XML search results — extract object name, type, description, package
             const objects = [];
-            const matches = xml.matchAll(/<adtcore:object[^>]+name="([^"]+)"[^>]+type="([^"]+)"[^>]*>([\s\S]*?)<\/adtcore:object>/gm);
-            for (const m of matches) {
-                objects.push({ name: m[1], type: m[2], raw: m[0] });
+            // Match <adtcore:objectReference ... /> elements
+            const refPattern = /<(?:adtcore:objectReference|atom:entry)[^>]*?>/gm;
+            // Broader attribute extraction
+            const namePattern = /adtcore:name="([^"]+)"/;
+            const typePattern = /adtcore:type="([^"]+)"/;
+            const descPattern = /adtcore:description="([^"]*)"/;
+            const pkgPattern = /adtcore:packageName="([^"]*)"/;
+            const uriPattern = /adtcore:uri="([^"]*)"/;
+
+            let match;
+            while ((match = refPattern.exec(xml)) !== null) {
+                const tag = match[0];
+                const name = (namePattern.exec(tag) || [])[1];
+                const type = (typePattern.exec(tag) || [])[1];
+                if (name && type) {
+                    objects.push({
+                        name,
+                        type,
+                        description: (descPattern.exec(tag) || [])[1] || '',
+                        packageName: (pkgPattern.exec(tag) || [])[1] || '',
+                        url: (uriPattern.exec(tag) || [])[1] || ''
+                    });
+                }
             }
-            res.json({ success: true, data: objects, raw: xml });
+
+            res.json({ success: true, data: objects });
         } catch (error) {
-            console.error('[adt/search] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'search');
         }
     });
 
@@ -163,23 +236,35 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
-            const url = `/sap/adt/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}*&maxResults=${maxResults}&objectType=DEVC%2FK`;
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/search-package] user=${logonName}, dest=${destinationName}, query=${query}`);
+
+            const url = `/sap/adt/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&objectType=DEVC%2FK`;
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url,
-                headers: { Accept: 'application/xml' }
+                headers: { 'Accept': 'application/xml' }
             });
-            res.json({ success: true, raw: response.data });
+
+            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+            const objects = [];
+            const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
+            const namePattern = /adtcore:name="([^"]+)"/;
+            const descPattern = /adtcore:description="([^"]*)"/;
+            let match;
+            while ((match = refPattern.exec(xml)) !== null) {
+                const tag = match[0];
+                const name = (namePattern.exec(tag) || [])[1];
+                if (name) objects.push({ name, type: 'DEVC', description: (descPattern.exec(tag) || [])[1] || '' });
+            }
+            res.json({ success: true, data: objects });
         } catch (error) {
-            console.error('[adt/search-package] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'search-package');
         }
     });
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/create-object  — Create a new ABAP object
-    // ADT API: PUT /sap/adt/<objectTypeUri>/<objectName>
-    //   Body: XML descriptor
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/create-object', async (req, res) => {
         try {
@@ -197,9 +282,11 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/create-object] user=${logonName}, dest=${destinationName}, type=${objectType}, name=${name}`);
+
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
 
-            // Build object URI path based on type
             const typeUriMap = {
                 'PROG': 'programs/programs',
                 'FUGR': 'functions/groups',
@@ -215,7 +302,7 @@ cds.on('bootstrap', (app) => {
   adtcore:description="${description || ''}"
   adtcore:name="${name.toUpperCase()}"
   adtcore:packageName="${packageName.toUpperCase()}"
-  adtcore:responsible="${(responsible || 'DEVELOPER').toUpperCase()}"/>`;
+  adtcore:responsible="${(responsible || logonName || 'DEVELOPER').toUpperCase()}"/>`;
 
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
@@ -230,14 +317,12 @@ cds.on('bootstrap', (app) => {
             const objectUrl = response.headers['location'] || `/sap/adt/${typeUri}/${name}`;
             res.json({ success: true, objectUrl, statusCode: response.status });
         } catch (error) {
-            console.error('[adt/create-object] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'create-object');
         }
     });
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/lock  — Lock an ABAP object for editing
-    // ADT API: POST /sap/adt/<objectUrl>?_action=LOCK&accessMode=MODIFY
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/lock', async (req, res) => {
         try {
@@ -253,6 +338,9 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/lock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
+
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
@@ -263,20 +351,17 @@ cds.on('bootstrap', (app) => {
                 }
             });
 
-            // Lock handle is in the response XML
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            const match = xml.match(/lockHandle[^>]*>([^<]+)<\/lockHandle>|"lockHandle"\s*:\s*"([^"]+)"/);
-            const lockHandle = match ? (match[1] || match[2]) : 'UNKNOWN';
+            const match = xml.match(/<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>|<lockHandle[^>]*>([^<]+)<\/lockHandle>/);
+            const lockHandle = match ? (match[1] || match[2] || '').trim() : xml.trim();
             res.json({ success: true, lockHandle });
         } catch (error) {
-            console.error('[adt/lock] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'lock');
         }
     });
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/set-source  — Upload source code to a locked object
-    // ADT API: PUT /sap/adt/<objectUrl>/source/main?lockHandle=<handle>
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/set-source', async (req, res) => {
         try {
@@ -286,13 +371,13 @@ cds.on('bootstrap', (app) => {
             }
 
             if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    message: `[Mock] Source saved for ${objectUrl} (${source.length} chars)`
-                });
+                return res.json({ success: true, message: `[Mock] Source saved for ${objectUrl} (${source.length} chars)` });
             }
 
             const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
+
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
@@ -306,14 +391,12 @@ cds.on('bootstrap', (app) => {
             });
             res.json({ success: true, message: 'Source saved successfully' });
         } catch (error) {
-            console.error('[adt/set-source] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'set-source');
         }
     });
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/unlock  — Unlock an ABAP object after editing
-    // ADT API: DELETE /sap/adt/<objectUrl>?_action=UNLOCK&lockHandle=<handle>
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/unlock', async (req, res) => {
         try {
@@ -325,6 +408,9 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/unlock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
+
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
             await callAdt(destinationName, jwt, {
                 method: 'DELETE',
@@ -333,20 +419,16 @@ cds.on('bootstrap', (app) => {
             });
             res.json({ success: true, message: 'Object unlocked' });
         } catch (error) {
-            console.error('[adt/unlock] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'unlock');
         }
     });
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/activate  — Activate ABAP objects
-    // ADT API: POST /sap/adt/activation/activate_multiple
-    //   Body: XML list of objects to activate
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/activate', async (req, res) => {
         try {
             const { destinationName, objects } = req.body;
-            // objects: [{ name, type, url }]
             if (!destinationName || !objects || !objects.length) {
                 return res.status(400).json({ error: 'Missing destinationName or objects array' });
             }
@@ -360,6 +442,9 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/activate] user=${logonName}, dest=${destinationName}, objects=${objects.map(o => o.name).join(',')}`);
+
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
 
             const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
@@ -378,16 +463,14 @@ ${objects.map(o => `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:na
                 data: xmlBody
             });
 
-            res.json({ success: true, status: response.status, data: response.data });
+            res.json({ success: true, status: response.status });
         } catch (error) {
-            console.error('[adt/activate] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'activate');
         }
     });
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/get-source  — Get source code of an existing object
-    // ADT API: GET /sap/adt/<objectUrl>/source/main
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/get-source', async (req, res) => {
         try {
@@ -402,15 +485,17 @@ ${objects.map(o => `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:na
             }
 
             const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/get-source] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
+
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url: `${objectUrl}/source/main`,
-                headers: { Accept: 'text/plain' }
+                headers: { 'Accept': 'text/plain; charset=utf-8' }
             });
             res.json({ success: true, source: response.data });
         } catch (error) {
-            console.error('[adt/get-source] Error:', error.message);
-            res.status(500).json({ error: error.message });
+            return handleAdtError(res, error, 'get-source');
         }
     });
 });
