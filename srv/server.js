@@ -19,38 +19,30 @@ cds.on('bootstrap', (app) => {
     app.use(express.json());
 
     // ─── Helper: get user JWT for Principal Propagation ─────────────────────────
-    // Priority: req.authInfo.getToken() = raw XSUAA JWT (correct for PP)
-    // Fallback: Authorization header (may be approuter session token)
+    // SAME pattern as /api/fetch-bom which works correctly on BTP:
+    //   Authorization header = XSUAA JWT forwarded by approuter → use this FIRST for PP
+    //   authInfo.getToken() = fallback only
     function getUserJwt(req) {
-        // authInfo.getToken() returns the original XSUAA JWT from the user's session
-        // This is what SAP Cloud SDK needs for Principal Propagation to on-prem
-        if (req.authInfo && typeof req.authInfo.getToken === 'function') {
-            const token = req.authInfo.getToken();
-            if (token) return token;
-        }
         const authHeader = req.headers.authorization;
-        return authHeader && authHeader.startsWith('Bearer ')
+        const jwtFromHeader = authHeader && authHeader.startsWith('Bearer ')
             ? authHeader.substring(7)
             : null;
+        const jwtFromAuthInfo = req.authInfo && typeof req.authInfo.getToken === 'function'
+            ? req.authInfo.getToken()
+            : null;
+        return jwtFromHeader || jwtFromAuthInfo || null;
     }
 
-    // ─── Helper: call ADT API via SAP Cloud SDK ───────────────────────────────────
+    // ─── Helper: call on-prem via SAP Cloud SDK (same as fetch-bom) ──────────────
     async function callAdt(destinationName, jwt, options) {
         const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
         try {
             return await executeHttpRequest(
-                {
-                    destinationName,
-                    jwt,
-                    // suppressErrorHandlerExecution: allow us to handle errors ourselves
-                },
-                {
-                    ...options,
-                    // Ensure axios doesn't throw on 4xx so we can inspect response
-                }
+                { destinationName, jwt },
+                options
             );
         } catch (err) {
-            // Enrich error with downstream status for proper forwarding
+            // Enrich error with downstream HTTP status so we can forward it to client
             const downstreamStatus = err.response?.status || err.cause?.response?.status;
             const downstreamBody = err.response?.data || err.cause?.response?.data;
             if (downstreamStatus) {
@@ -61,23 +53,18 @@ cds.on('bootstrap', (app) => {
         }
     }
 
-    // ─── Helper: build standardized error response ────────────────────────────────
+    // ─── Helper: standardized error response with downstream status ───────────────
     function handleAdtError(res, err, endpoint) {
-        const downstream = err.downstreamStatus;
-        const status = downstream || 500;
-        const body = {
+        const status = err.downstreamStatus || 500;
+        console.error(`[adt/${endpoint}] Error (HTTP ${status}):`, err.message);
+        if (err.downstreamBody) {
+            console.error(`[adt/${endpoint}] Downstream:`, JSON.stringify(err.downstreamBody).substring(0, 500));
+        }
+        return res.status(status).json({
             error: err.message,
             downstream: err.downstreamBody,
             endpoint
-        };
-        console.error(`[adt/${endpoint}] Error (HTTP ${status}):`, err.message);
-        if (err.downstreamBody) {
-            console.error(`[adt/${endpoint}] Downstream body:`, JSON.stringify(err.downstreamBody).substring(0, 500));
-        }
-        if (err.stack) {
-            console.error(`[adt/${endpoint}] Stack:`, err.stack.split('\n').slice(0, 5).join('\n'));
-        }
-        return res.status(status).json(body);
+        });
     }
 
     // ─── Helper: fetch ADT CSRF token from on-prem ───────────────────────────────
