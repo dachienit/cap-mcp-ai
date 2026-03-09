@@ -19,14 +19,14 @@ cds.on('bootstrap', (app) => {
     app.get('/api/me', (req, res) => {
         // req.user is populated by basic authentication for local dev
         // req.authInfo is populated by xssec for production Approuter
-        const user = req.user || req.authInfo;
+        //const user = req.user || req.authInfo;
 
-        if (user) {
+        if (req.authInfo) {
             // Local dev (mock strategy) uses a different object structure than XSUAA's authInfo
-            const logonName = user.id || (user.getLogonName && user.getLogonName()) || 'mock-user';
-            const email = (user.getEmail && user.getEmail()) || 'mock@example.com';
-            const firstName = (user.getGivenName && user.getGivenName()) || 'Mock';
-            const lastName = (user.getFamilyName && user.getFamilyName()) || 'User';
+            const logonName = req.authInfo.getLogonName();
+            const email = req.authInfo.getEmail();
+            const firstName = req.authInfo.getGivenName();
+            const lastName = req.authInfo.getFamilyName();
 
             res.json({
                 userId: logonName,
@@ -48,9 +48,10 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    app.post('/api/fetch-bom', async (req, res) => {
+    const express = require('express');
+    app.post('/api/fetch-bom', express.json(), async (req, res) => {
         try {
-            const destinationName = req.body.destinationName || 'T4X_011';
+            const destinationName = req.body?.destinationName || 'T4X_011';
             if (!destinationName) {
                 return res.status(400).json({ error: "Missing destinationName" });
             }

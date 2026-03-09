@@ -1,5 +1,5 @@
 _schema-version: 3.3.0
-ID: my_cap_1
+ID: cap-mcp-ai
 version: 1.0.0
 description: "A simple CAP project."
 parameters:
@@ -11,7 +11,7 @@ build-parameters:
         - npm ci
         - npx cds build --production
 modules:
-  - name: my_cap_1-srv
+  - name: cap-mcp-ai-srv
     type: nodejs
     path: gen/srv
     parameters:
@@ -24,10 +24,10 @@ modules:
         properties:
           srv-url: ${default-url}
     requires:
-      - name: my_cap_1-auth
-      - name: my_cap_1-destination
-      - name: my_cap_1-connectivity
-  - name: my_cap_1
+      - name: cap-mcp-ai-auth
+      - name: cap-mcp-ai-destination
+      - name: cap-mcp-ai-connectivity
+  - name: cap-mcp-ai
     type: approuter.nodejs
     path: app/router
     parameters:
@@ -49,7 +49,7 @@ modules:
           name: srv-api # must be used in xs-app.json as well
           url: ~{srv-url}
           forwardAuthToken: true
-      - name: my_cap_1-auth
+      - name: cap-mcp-ai-auth
     provides:
       - name: app-api
         properties:
@@ -57,24 +57,24 @@ modules:
           app-uri: ${default-uri}
 
 resources:
-  - name: my_cap_1-destination
+  - name: cap-mcp-ai-destination
     type: org.cloudfoundry.managed-service
     parameters:
       service: destination
       service-plan: lite
-  - name: my_cap_1-connectivity
+  - name: cap-mcp-ai-connectivity
     type: org.cloudfoundry.managed-service
     parameters:
       service: connectivity
       service-plan: lite
-  - name: my_cap_1-auth
+  - name: cap-mcp-ai-auth
     type: org.cloudfoundry.managed-service
     parameters:
       service: xsuaa
       service-plan: application
       path: ./xs-security.json
       config:
-        xsappname: my_cap_1-${org}-${space}
+        xsappname: cap-mcp-ai-${org}-${space}
         tenant-mode: dedicated
         oauth2-configuration:
           credential-types:
