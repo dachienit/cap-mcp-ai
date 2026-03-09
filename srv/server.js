@@ -18,6 +18,10 @@ cds.on('bootstrap', (app) => {
     const express = require('express');
     app.use(express.json());
 
+    // ADT base path — SAP ICF node for ABAP Development Tools
+    // Cloud Connector must expose this path: /sap/bc/adt
+    const ADT_BASE = '/sap/bc/adt';
+
     // ─── Helper: get user JWT for Principal Propagation ─────────────────────────
     // SAME pattern as /api/fetch-bom which works correctly on BTP:
     //   Authorization header = XSUAA JWT forwarded by approuter → use this FIRST for PP
@@ -71,7 +75,7 @@ cds.on('bootstrap', (app) => {
     async function fetchAdtCsrfToken(destinationName, jwt) {
         const resp = await callAdt(destinationName, jwt, {
             method: 'GET',
-            url: '/sap/adt/core/discovery',
+            url: `${ADT_BASE}/core/discovery`,
             headers: { 'X-CSRF-Token': 'Fetch', 'Accept': 'application/xml' }
         });
         return resp.headers['x-csrf-token'] || resp.headers['X-CSRF-Token'] || '';
@@ -155,7 +159,7 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/search] user=${logonName}, dest=${destinationName}, query=${query}, jwt_present=${!!jwt}`);
 
-            let url = `/sap/adt/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&reposistoryScope=ALL`;
+            let url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&reposistoryScope=ALL`;
             if (objectType) url += `&objectType=${encodeURIComponent(objectType)}`;
 
             const response = await callAdt(destinationName, jwt, {
@@ -226,7 +230,7 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/search-package] user=${logonName}, dest=${destinationName}, query=${query}`);
 
-            const url = `/sap/adt/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&objectType=DEVC%2FK`;
+            const url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&objectType=DEVC%2FK`;
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url,
@@ -293,7 +297,7 @@ cds.on('bootstrap', (app) => {
 
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
-                url: `/sap/adt/${typeUri}`,
+                url: `${ADT_BASE}/${typeUri}`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
                     'Content-Type': 'application/vnd.sap.adt.programs.programs.v2+xml'
@@ -301,7 +305,7 @@ cds.on('bootstrap', (app) => {
                 data: xmlBody
             });
 
-            const objectUrl = response.headers['location'] || `/sap/adt/${typeUri}/${name}`;
+            const objectUrl = response.headers['location'] || `${ADT_BASE}/${typeUri}/${name}`;
             res.json({ success: true, objectUrl, statusCode: response.status });
         } catch (error) {
             return handleAdtError(res, error, 'create-object');
@@ -441,7 +445,7 @@ ${objects.map(o => `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:na
 
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
-                url: '/sap/adt/activation/activate_multiple',
+                url: `${ADT_BASE}/activation/activate_multiple`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
                     'Content-Type': 'application/xml',
