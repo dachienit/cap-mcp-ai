@@ -9,6 +9,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
     const [originalSource, setOriginalSource] = useState('');
     const [lockHandle, setLockHandle] = useState(null);
     const [sessionCookie, setSessionCookie] = useState(null);
+    const [lockCsrfToken, setLockCsrfToken] = useState(null);
     const [sourceUrl, setSourceUrl] = useState(null); // actual source URL (may differ from objectUrl/source/main)
     const [isLoaded, setIsLoaded] = useState(false);
     const [isDirty, setIsDirty] = useState(false);
@@ -23,7 +24,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
     const handleLoad = async () => {
         const url = objectUrl.trim();
         if (!url) { addToast('Please enter an object URL', 'warning'); return; }
-        setLoadingState('loading'); setSource(''); setLockHandle(null); setSessionCookie(null); setSourceUrl(null); setIsLoaded(false);
+        setLoadingState('loading'); setSource(''); setLockHandle(null); setSessionCookie(null); setLockCsrfToken(null); setSourceUrl(null); setIsLoaded(false);
         try {
             const res = await getObjectSource(destinationName, url);
             setSource(res.source || '');
@@ -43,6 +44,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
             const res = await lockObject(destinationName, objectUrl.trim());
             setLockHandle(res.lockHandle);
             setSessionCookie(res.sessionCookie || null);
+            setLockCsrfToken(res.csrfToken || null);
             addToast(`🔒 Object locked (handle: ${res.lockHandle?.substring(0, 12)}…)`, 'success');
         } catch (e) {
             addToast(e.message, 'error');
@@ -55,7 +57,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
         setLoadingState('saving');
         try {
             // Pass sourceUrl so backend uses the correct include URL (critical for ABAP Classes)
-            await setObjectSource(destinationName, objectUrl.trim(), lockHandle, source, sourceUrl, sessionCookie);
+            await setObjectSource(destinationName, objectUrl.trim(), lockHandle, source, sourceUrl, sessionCookie, lockCsrfToken);
             setOriginalSource(source); setIsDirty(false);
             addToast('✅ Source saved successfully', 'success');
         } catch (e) {
@@ -68,9 +70,10 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
         if (!isLocked) return;
         setLoadingState('unlocking');
         try {
-            await unlock(destinationName, objectUrl.trim(), lockHandle, sessionCookie);
+            await unlock(destinationName, objectUrl.trim(), lockHandle, sessionCookie, lockCsrfToken);
             setLockHandle(null);
             setSessionCookie(null);
+            setLockCsrfToken(null);
             addToast('🔓 Object unlocked', 'success');
         } catch (e) {
             addToast(e.message, 'error');

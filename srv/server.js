@@ -427,7 +427,7 @@ cds.on('bootstrap', (app) => {
                     console.warn('[adt/lock] Could not parse lockHandle from xml:', xml.substring(0, 200));
                 }
             }
-            res.json({ success: true, lockHandle, sessionCookie: csrf.cookie });
+            res.json({ success: true, lockHandle, sessionCookie: csrf.cookie, csrfToken: csrf.token });
         } catch (error) {
             return handleAdtError(res, error, 'lock');
         }
@@ -441,7 +441,7 @@ cds.on('bootstrap', (app) => {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/set-source', async (req, res) => {
         try {
-            const { destinationName, objectUrl, sourceUrl, lockHandle, sessionCookie, source } = req.body;
+            const { destinationName, objectUrl, sourceUrl, lockHandle, sessionCookie, lockCsrfToken, source } = req.body;
             if (!destinationName || !objectUrl || !lockHandle || source === undefined) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, lockHandle, source' });
             }
@@ -474,10 +474,14 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
 
-            // Use the session cookie provided by the client (from the lock step)
-            // or fetch a new one if not provided (might fail with 423 if lock requires same session)
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
-            if (sessionCookie) csrf.cookie = sessionCookie; // OVERRIDE with lock session cookie
+            // Use the session cookie and CSRF token provided by the client (from the lock step)
+            // This guarantees SAP sees the EXACT SAME session and token for this write operation.
+            let csrf = { cookie: sessionCookie, token: lockCsrfToken };
+            if (!csrf.token || !csrf.cookie) {
+                // Fallback (might fail with 403 or 423 if lock requires same session)
+                csrf = await fetchAdtCsrfToken(destinationName, jwt);
+                if (sessionCookie) csrf.cookie = sessionCookie;
+            }
 
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
@@ -496,7 +500,7 @@ cds.on('bootstrap', (app) => {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/unlock', async (req, res) => {
         try {
-            const { destinationName, objectUrl, lockHandle, sessionCookie } = req.body;
+            const { destinationName, objectUrl, lockHandle, sessionCookie, lockCsrfToken } = req.body;
             if (!destinationName || !objectUrl || !lockHandle) return res.status(400).json({ error: 'Missing fields' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -507,8 +511,11 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/unlock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
-            if (sessionCookie) csrf.cookie = sessionCookie;
+            let csrf = { cookie: sessionCookie, token: lockCsrfToken };
+            if (!csrf.token || !csrf.cookie) {
+                csrf = await fetchAdtCsrfToken(destinationName, jwt);
+                if (sessionCookie) csrf.cookie = sessionCookie;
+            }
 
             await callAdt(destinationName, jwt, {
                 method: 'DELETE',
