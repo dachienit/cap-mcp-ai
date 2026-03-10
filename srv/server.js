@@ -296,7 +296,6 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/create-object] user=${logonName}, dest=${destinationName}, type=${objectType}, name=${name}`);
 
-            const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
 
             // Each object type has its own ADT URI path and XML schema
             const typeConfig = {
@@ -314,7 +313,7 @@ cds.on('bootstrap', (app) => {
                     contentType: 'application/vnd.sap.adt.oo.classincludes.v4+xml',
                     xml: (n, pkg, desc, resp) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
-                        `<oo:class xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n` +
+                        `<oo:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo/classes"\n` +
                         `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
                         `  oo:modeled="false" oo:final="true" oo:visibility="public"/>`
                 },
@@ -429,8 +428,8 @@ cds.on('bootstrap', (app) => {
                 }
             }
 
-            console.log(`[adt/lock] lockHandle=${lockHandle}`);
-            res.json({ success: true, lockHandle });
+            console.log(`[adt/lock] lockHandle=${lockHandle}, sessionCookie=${csrf.cookie?.substring(0, 40) || 'none'}`);
+            res.json({ success: true, lockHandle, sessionCookie: csrf.cookie });
         } catch (error) {
             return handleAdtError(res, error, 'lock');
         }
@@ -444,7 +443,7 @@ cds.on('bootstrap', (app) => {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/set-source', async (req, res) => {
         try {
-            const { destinationName, objectUrl, sourceUrl, lockHandle, source } = req.body;
+            const { destinationName, objectUrl, sourceUrl, lockHandle, sessionCookie, source } = req.body;
             if (!destinationName || !objectUrl || !lockHandle || source === undefined) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, lockHandle, source' });
             }
@@ -477,7 +476,11 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
 
+            // Use the session cookie provided by the client (from the lock step)
+            // or fetch a new one if not provided (might fail with 423 if lock requires same session)
             const csrf = await fetchAdtCsrfToken(destinationName, jwt);
+            if (sessionCookie) csrf.cookie = sessionCookie; // OVERRIDE with lock session cookie
+
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
                 url: `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`,
@@ -495,7 +498,7 @@ cds.on('bootstrap', (app) => {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/unlock', async (req, res) => {
         try {
-            const { destinationName, objectUrl, lockHandle } = req.body;
+            const { destinationName, objectUrl, lockHandle, sessionCookie } = req.body;
             if (!destinationName || !objectUrl || !lockHandle) return res.status(400).json({ error: 'Missing fields' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -507,6 +510,8 @@ cds.on('bootstrap', (app) => {
             console.log(`[adt/unlock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
             const csrf = await fetchAdtCsrfToken(destinationName, jwt);
+            if (sessionCookie) csrf.cookie = sessionCookie;
+
             await callAdt(destinationName, jwt, {
                 method: 'DELETE',
                 url: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,

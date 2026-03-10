@@ -81,15 +81,15 @@ export async function lockObject(destinationName, objectUrl) {
  * Upload source code to a locked object
  * @param {string} sourceUrl - Actual source URL from get-source response (may differ from objectUrl/source/main for classes)
  */
-export async function setObjectSource(destinationName, objectUrl, lockHandle, source, sourceUrl = null) {
-    return post('/api/adt/set-source', { destinationName, objectUrl, lockHandle, source, sourceUrl });
+export async function setObjectSource(destinationName, objectUrl, lockHandle, source, sourceUrl = null, sessionCookie = null) {
+    return post('/api/adt/set-source', { destinationName, objectUrl, lockHandle, source, sourceUrl, sessionCookie });
 }
 
 /**
  * Unlock an ABAP object
  */
-export async function unlock(destinationName, objectUrl, lockHandle) {
-    return post('/api/adt/unlock', { destinationName, objectUrl, lockHandle });
+export async function unlock(destinationName, objectUrl, lockHandle, sessionCookie = null) {
+    return post('/api/adt/unlock', { destinationName, objectUrl, lockHandle, sessionCookie });
 }
 
 /**
