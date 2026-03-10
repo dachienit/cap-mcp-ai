@@ -1,4 +1,4 @@
-const cds = require('@sap/cds');
+﻿const cds = require('@sap/cds');
 
 cds.on('bootstrap', (app) => {
     if (process.env.NODE_ENV === 'production') {
@@ -18,13 +18,13 @@ cds.on('bootstrap', (app) => {
     const express = require('express');
     app.use(express.json());
 
-    // ADT base path — SAP ICF node for ABAP Development Tools
+    // ADT base path â€” SAP ICF node for ABAP Development Tools
     // Cloud Connector must expose this path: /sap/bc/adt
     const ADT_BASE = '/sap/bc/adt';
 
-    // ─── Helper: get user JWT for Principal Propagation ─────────────────────────
+    // â”€â”€â”€ Helper: get user JWT for Principal Propagation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // SAME pattern as /api/fetch-bom which works correctly on BTP:
-    //   Authorization header = XSUAA JWT forwarded by approuter → use this FIRST for PP
+    //   Authorization header = XSUAA JWT forwarded by approuter â†’ use this FIRST for PP
     //   authInfo.getToken() = fallback only
     function getUserJwt(req) {
         const authHeader = req.headers.authorization;
@@ -37,7 +37,7 @@ cds.on('bootstrap', (app) => {
         return jwtFromHeader || jwtFromAuthInfo || null;
     }
 
-    // ─── Helper: call on-prem via SAP Cloud SDK (same as fetch-bom) ──────────────
+    // â”€â”€â”€ Helper: call on-prem via SAP Cloud SDK (same as fetch-bom) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     async function callAdt(destinationName, jwt, options) {
         const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
         try {
@@ -57,7 +57,7 @@ cds.on('bootstrap', (app) => {
         }
     }
 
-    // ─── Helper: standardized error response with downstream status ───────────────
+    // â”€â”€â”€ Helper: standardized error response with downstream status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     function handleAdtError(res, err, endpoint) {
         const status = err.downstreamStatus || 500;
         console.error(`[adt/${endpoint}] Error (HTTP ${status}):`, err.message);
@@ -71,22 +71,39 @@ cds.on('bootstrap', (app) => {
         });
     }
 
-    // ─── Helper: fetch ADT CSRF token from on-prem ───────────────────────────────
+    // â”€â”€â”€ Helper: fetch ADT CSRF token from on-prem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // SAP validates CSRF token against the HTTP session (cookie).
+    // We must return both the token AND the session cookie so subsequent
+    // write requests can send the same cookie, letting SAP match the session.
     async function fetchAdtCsrfToken(destinationName, jwt) {
         const resp = await callAdt(destinationName, jwt, {
             method: 'GET',
             url: `${ADT_BASE}/core/discovery`,
-            // Must include atomsvc+xml: this SAP system only serves this format for discovery
             headers: { 'X-CSRF-Token': 'Fetch', 'Accept': 'application/atomsvc+xml, application/xml, */*' }
         });
         const token = resp.headers['x-csrf-token'] || resp.headers['X-CSRF-Token'] || '';
-        console.log(`[csrf] fetched token: ${token?.substring(0, 10) || '(empty)'}`);
-        return token;
+        // Extract session cookie(s) â€” strip path/domain/max-age directives, keep name=value pairs
+        const setCookieHeader = resp.headers['set-cookie'];
+        let cookie = '';
+        if (Array.isArray(setCookieHeader)) {
+            cookie = setCookieHeader.map(c => c.split(';')[0]).join('; ');
+        } else if (setCookieHeader) {
+            cookie = setCookieHeader.split(';')[0];
+        }
+        console.log(`[csrf] token=${token?.substring(0, 10) || '(empty)'}, cookie=${cookie?.substring(0, 40) || '(none)'}`);
+        return { token, cookie };
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // Helper: build headers with CSRF token + session cookie
+    function csrfHeaders(csrfResult, extra = {}) {
+        const h = { 'X-CSRF-Token': csrfResult.token, ...extra };
+        if (csrfResult.cookie) h['Cookie'] = csrfResult.cookie;
+        return h;
+    }
+
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // /api/me
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.get('/api/me', (req, res) => {
         if (req.authInfo) {
             res.json({
@@ -107,9 +124,9 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // /api/fetch-bom  (legacy)
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/fetch-bom', async (req, res) => {
         try {
             const destinationName = req.body?.destinationName || 'T4X_011';
@@ -137,11 +154,11 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/search  — Search ABAP repository objects
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/search  â€” Search ABAP repository objects
     // ADT API: GET /sap/adt/repository/informationsystem/search
     //   ?operation=quickSearch&query=<term>&maxResults=50&objectType=<type>
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/search', async (req, res) => {
         try {
             const { destinationName, query, objectType = '', maxResults = 50 } = req.body;
@@ -178,7 +195,7 @@ cds.on('bootstrap', (app) => {
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/search] response status=${response.status}, body_length=${xml.length}`);
 
-            // Parse ADT XML search results — extract object name, type, description, package
+            // Parse ADT XML search results â€” extract object name, type, description, package
             const objects = [];
             // Match <adtcore:objectReference ... /> elements
             const refPattern = /<(?:adtcore:objectReference|atom:entry)[^>]*?>/gm;
@@ -211,9 +228,9 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/search-package  — Search ABAP packages (DEVC)
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/search-package  â€” Search ABAP packages (DEVC)
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/search-package', async (req, res) => {
         try {
             const { destinationName, query, maxResults = 50 } = req.body;
@@ -257,9 +274,9 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/create-object  — Create a new ABAP object
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/create-object  â€” Create a new ABAP object
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/create-object', async (req, res) => {
         try {
             const { destinationName, objectType, name, packageName, description, responsible } = req.body;
@@ -341,14 +358,11 @@ cds.on('bootstrap', (app) => {
             console.log(`[adt/create-object] xmlBody: ${xmlBody}`);
             console.log(`[adt/create-object] contentType: ${cfg.contentType}, url: ${ADT_BASE}/${cfg.uri}`);
 
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${ADT_BASE}/${cfg.uri}`,
-                headers: {
-                    'X-CSRF-Token': csrfToken,
-                    'Content-Type': cfg.contentType,
-                    'Accept': '*/*'
-                },
+                headers: csrfHeaders(csrf, { 'Content-Type': cfg.contentType, 'Accept': '*/*' }),
                 data: xmlBody
             });
 
@@ -360,11 +374,11 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/lock  — Lock an ABAP object for editing
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/lock  â€” Lock an ABAP object for editing
     // ADT: POST objectUrl?_action=LOCK&accessMode=MODIFY
     // Returns: XML with LOCK_HANDLE
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/lock', async (req, res) => {
         try {
             const { destinationName, objectUrl, accessMode = 'MODIFY' } = req.body;
@@ -382,22 +396,18 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/lock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
-            const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
-            console.log(`[adt/lock] csrf=${csrfToken?.substring(0, 10)}, sending lock to: ${objectUrl}?_action=LOCK&accessMode=${accessMode}`);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
+            console.log(`[adt/lock] csrf=${csrf.token?.substring(0, 10)}, sending lock to: ${objectUrl}?_action=LOCK&accessMode=${accessMode}`);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
-                headers: {
-                    'X-CSRF-Token': csrfToken,
-                    // SAP ADT lock result: accept any format incl. atomsvc
-                    'Accept': '*/*'
-                }
+                headers: csrfHeaders(csrf, { 'Accept': '*/*' })
             });
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/lock] response xml (first 300): ${xml.substring(0, 300)}`);
 
-            // Parse lockHandle — ADT returns it inside <LOCK_HANDLE> or <adtlock:lockHandle>
+            // Parse lockHandle â€” ADT returns it inside <LOCK_HANDLE> or <adtlock:lockHandle>
             let lockHandle = '';
             const patterns = [
                 /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i,
@@ -426,12 +436,12 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/set-source  — Upload source code to a locked object
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/set-source  â€” Upload source code to a locked object
     // ADT: PUT sourceUrl?lockHandle=<handle>
     // NOTE: sourceUrl must be the actual source URL (from get-source response),
-    //       not just objectUrl/source/main — classes have different include URLs
-    // ═══════════════════════════════════════════════════════════════════════════════
+    //       not just objectUrl/source/main â€” classes have different include URLs
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/set-source', async (req, res) => {
         try {
             const { destinationName, objectUrl, sourceUrl, lockHandle, source } = req.body;
@@ -467,15 +477,11 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
 
-            const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
                 url: `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`,
-                headers: {
-                    'X-CSRF-Token': csrfToken,
-                    'Content-Type': 'text/plain; charset=utf-8',
-                    'Accept': 'text/plain'
-                },
+                headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8', 'Accept': 'text/plain, */*' }),
                 data: source
             });
             res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
@@ -484,9 +490,9 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/unlock  — Unlock an ABAP object after editing
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/unlock  â€” Unlock an ABAP object after editing
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/unlock', async (req, res) => {
         try {
             const { destinationName, objectUrl, lockHandle } = req.body;
@@ -500,11 +506,11 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/unlock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
-            const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
             await callAdt(destinationName, jwt, {
                 method: 'DELETE',
                 url: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-                headers: { 'X-CSRF-Token': csrfToken }
+                headers: csrfHeaders(csrf)
             });
             res.json({ success: true, message: 'Object unlocked' });
         } catch (error) {
@@ -512,12 +518,12 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/activate  — Activate ABAP objects
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/activate  â€” Activate ABAP objects
     // ADT: POST /sap/bc/adt/activation/activate_multiple  (multiple objects)
     //      POST /sap/bc/adt/activation/activate?method=activate&preauditRequested=false
     //           with XML body containing object references
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/activate', async (req, res) => {
         try {
             const { destinationName, objects } = req.body;
@@ -538,7 +544,7 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/activate] user=${logonName}, dest=${destinationName}, objects=${objects.map(o => o.name).join(',')}`);
 
-            const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
 
             // Build objectReferences XML
             const objRefs = objects.map(o =>
@@ -557,11 +563,10 @@ cds.on('bootstrap', (app) => {
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
-                headers: {
-                    'X-CSRF-Token': csrfToken,
+                headers: csrfHeaders(csrf, {
                     'Content-Type': 'application/xml',
-                    'Accept': 'application/xml, application/vnd.sap.adt.activation.result.v1+xml'
-                },
+                    'Accept': 'application/xml, */*'
+                }),
                 data: xmlBody
             });
 
@@ -581,13 +586,13 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // /api/adt/get-source  — Get source code of an existing object
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // /api/adt/get-source  â€” Get source code of an existing object
     // ADT: GET objectUrl/source/main  (text/plain ABAP source)
     // NOTE: The objectStructure approach (finding source link from XML) was removed
     //       because it was picking up wrong links (textelements) for ABAP classes.
     //       Direct /source/main works for: PROG, CLAS main, INTF, FUNC
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/get-source', async (req, res) => {
         try {
             const { destinationName, objectUrl } = req.body;
