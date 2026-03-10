@@ -341,7 +341,8 @@ cds.on('bootstrap', (app) => {
                 url: `${ADT_BASE}/${cfg.uri}`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
-                    'Content-Type': cfg.contentType
+                    'Content-Type': cfg.contentType,
+                    'Accept': 'application/atomsvc+xml, application/xml, */*'
                 },
                 data: xmlBody
             });
@@ -382,7 +383,8 @@ cds.on('bootstrap', (app) => {
                 url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
-                    'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.Result,application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.LockList'
+                    // Include atomsvc+xml: some SAP versions respond with this format
+                    'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.Result, application/atomsvc+xml, */*'
                 }
             });
 
@@ -605,7 +607,8 @@ cds.on('bootstrap', (app) => {
                 const structResp = await callAdt(destinationName, jwt, {
                     method: 'GET',
                     url: objectUrl,
-                    headers: { 'Accept': 'application/vnd.sap.adt.oo.class.v4+xml, application/xml, application/*+xml' }
+                    // Use */* to accept any response format including atomsvc+xml
+                    headers: { 'Accept': 'application/atomsvc+xml, application/xml, application/*+xml, */*' }
                 });
                 const structXml = typeof structResp.data === 'string' ? structResp.data : JSON.stringify(structResp.data);
 
