@@ -8,6 +8,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
     const [source, setSource] = useState('');
     const [originalSource, setOriginalSource] = useState('');
     const [lockHandle, setLockHandle] = useState(null);
+    const [sourceUrl, setSourceUrl] = useState(null); // actual source URL (may differ from objectUrl/source/main)
     const [isLoaded, setIsLoaded] = useState(false);
     const [isDirty, setIsDirty] = useState(false);
 
@@ -21,11 +22,12 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
     const handleLoad = async () => {
         const url = objectUrl.trim();
         if (!url) { addToast('Please enter an object URL', 'warning'); return; }
-        setLoadingState('loading'); setSource(''); setLockHandle(null); setIsLoaded(false);
+        setLoadingState('loading'); setSource(''); setLockHandle(null); setSourceUrl(null); setIsLoaded(false);
         try {
             const res = await getObjectSource(destinationName, url);
             setSource(res.source || '');
             setOriginalSource(res.source || '');
+            setSourceUrl(res.sourceUrl || null); // save actual source URL for set-source
             setIsLoaded(true); setIsDirty(false);
             addToast('Source loaded successfully', 'success');
         } catch (e) {
@@ -50,7 +52,8 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
         if (!isLocked) { addToast('Lock the object first before saving', 'warning'); return; }
         setLoadingState('saving');
         try {
-            await setObjectSource(destinationName, objectUrl.trim(), lockHandle, source);
+            // Pass sourceUrl so backend uses the correct include URL (critical for ABAP Classes)
+            await setObjectSource(destinationName, objectUrl.trim(), lockHandle, source, sourceUrl);
             setOriginalSource(source); setIsDirty(false);
             addToast('✅ Source saved successfully', 'success');
         } catch (e) {

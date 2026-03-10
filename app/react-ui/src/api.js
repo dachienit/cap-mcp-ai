@@ -79,9 +79,10 @@ export async function lockObject(destinationName, objectUrl) {
 
 /**
  * Upload source code to a locked object
+ * @param {string} sourceUrl - Actual source URL from get-source response (may differ from objectUrl/source/main for classes)
  */
-export async function setObjectSource(destinationName, objectUrl, lockHandle, source) {
-    return post('/api/adt/set-source', { destinationName, objectUrl, lockHandle, source });
+export async function setObjectSource(destinationName, objectUrl, lockHandle, source, sourceUrl = null) {
+    return post('/api/adt/set-source', { destinationName, objectUrl, lockHandle, source, sourceUrl });
 }
 
 /**

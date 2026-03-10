@@ -268,7 +268,7 @@ cds.on('bootstrap', (app) => {
                 return res.json({
                     success: true,
                     message: `[Mock] Object ${name} of type ${objectType} created in package ${packageName}`,
-                    objectUrl: `/sap/adt/programs/programs/${name}`
+                    objectUrl: `${ADT_BASE}/programs/programs/${name.toLowerCase()}`
                 });
             }
 
@@ -278,34 +278,76 @@ cds.on('bootstrap', (app) => {
 
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
 
-            const typeUriMap = {
-                'PROG': 'programs/programs',
-                'FUGR': 'functions/groups',
-                'CLAS': 'oo/classes',
-                'INTF': 'oo/interfaces',
-                'DEVC': 'packages'
+            // Each object type has its own ADT URI path and XML schema
+            const typeConfig = {
+                'PROG': {
+                    uri: 'programs/programs',
+                    contentType: 'application/vnd.sap.adt.programs.programs.v2+xml',
+                    xml: (n, pkg, desc, resp) =>
+                        `<?xml version="1.0" encoding="utf-8"?>\n` +
+                        `<program:abapProgram xmlns:adtcore="http://www.sap.com/adt/core" xmlns:program="http://www.sap.com/adt/programs/programs"\n` +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
+                        `  program:programType="executableProgram"/>`
+                },
+                'CLAS': {
+                    uri: 'oo/classes',
+                    contentType: 'application/vnd.sap.adt.oo.classincludes.v4+xml',
+                    xml: (n, pkg, desc, resp) =>
+                        `<?xml version="1.0" encoding="utf-8"?>\n` +
+                        `<oo:class xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n` +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
+                        `  oo:modeled="false" oo:final="true" oo:visibility="public"/>`
+                },
+                'INTF': {
+                    uri: 'oo/interfaces',
+                    contentType: 'application/vnd.sap.adt.oo.interface.v2+xml',
+                    xml: (n, pkg, desc, resp) =>
+                        `<?xml version="1.0" encoding="utf-8"?>\n` +
+                        `<oo:interface xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n` +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"/>`
+                },
+                'FUGR': {
+                    uri: 'functions/groups',
+                    contentType: 'application/vnd.sap.adt.functions.groups.v3+xml',
+                    xml: (n, pkg, desc, resp) =>
+                        `<?xml version="1.0" encoding="utf-8"?>\n` +
+                        `<funcgrp:abapFunctionGroup xmlns:adtcore="http://www.sap.com/adt/core" xmlns:funcgrp="http://www.sap.com/adt/functions/groups"\n` +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"/>`
+                },
+                'DEVC': {
+                    uri: 'packages',
+                    contentType: 'application/vnd.sap.adt.packages.v1+xml',
+                    xml: (n, pkg, desc, resp) =>
+                        `<?xml version="1.0" encoding="utf-8"?>\n` +
+                        `<pak:package xmlns:adtcore="http://www.sap.com/adt/core" xmlns:pak="http://www.sap.com/adt/packages"\n` +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"/>`
+                }
             };
-            const typeUri = typeUriMap[objectType] || `repository/objects/${objectType}`;
 
-            const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
-<${objectType === 'CLAS' ? 'oo:class' : 'program:abapProgram'} xmlns:adtcore="http://www.sap.com/adt/core"
-  xmlns:program="http://www.sap.com/adt/programs/programs"
-  adtcore:description="${description || ''}"
-  adtcore:name="${name.toUpperCase()}"
-  adtcore:packageName="${packageName.toUpperCase()}"
-  adtcore:responsible="${(responsible || logonName || 'DEVELOPER').toUpperCase()}"/>`;
+            const cfg = typeConfig[objectType];
+            if (!cfg) {
+                return res.status(400).json({ error: `Unsupported object type: ${objectType}. Supported: PROG, CLAS, INTF, FUGR, DEVC` });
+            }
+
+            const cleanName = name.toUpperCase();
+            const cleanPkg = packageName.toUpperCase();
+            const cleanDesc = (description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+            const cleanResp = (responsible || logonName || 'DEVELOPER').toUpperCase();
+
+            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp);
 
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
-                url: `${ADT_BASE}/${typeUri}`,
+                url: `${ADT_BASE}/${cfg.uri}`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
-                    'Content-Type': 'application/vnd.sap.adt.programs.programs.v2+xml'
+                    'Content-Type': cfg.contentType
                 },
                 data: xmlBody
             });
 
-            const objectUrl = response.headers['location'] || `${ADT_BASE}/${typeUri}/${name}`;
+            const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
+            console.log(`[adt/create-object] created: ${objectUrl}`);
             res.json({ success: true, objectUrl, statusCode: response.status });
         } catch (error) {
             return handleAdtError(res, error, 'create-object');
@@ -314,10 +356,12 @@ cds.on('bootstrap', (app) => {
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/lock  — Lock an ABAP object for editing
+    // ADT: POST objectUrl?_action=LOCK&accessMode=MODIFY
+    // Returns: XML with LOCK_HANDLE
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/lock', async (req, res) => {
         try {
-            const { destinationName, objectUrl } = req.body;
+            const { destinationName, objectUrl, accessMode = 'MODIFY' } = req.body;
             if (!destinationName || !objectUrl) return res.status(400).json({ error: 'Missing destinationName or objectUrl' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -335,16 +379,39 @@ cds.on('bootstrap', (app) => {
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
-                url: `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
+                url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
-                    'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.Result'
+                    'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.Result,application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.LockList'
                 }
             });
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            const match = xml.match(/<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>|<lockHandle[^>]*>([^<]+)<\/lockHandle>/);
-            const lockHandle = match ? (match[1] || match[2] || '').trim() : xml.trim();
+            console.log(`[adt/lock] response xml (first 300): ${xml.substring(0, 300)}`);
+
+            // Parse lockHandle — ADT returns it inside <LOCK_HANDLE> or <adtlock:lockHandle>
+            let lockHandle = '';
+            const patterns = [
+                /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i,
+                /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i,
+                /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i,
+                /"LOCK_HANDLE":\s*"([^"]+)"/
+            ];
+            for (const p of patterns) {
+                const m = p.exec(xml);
+                if (m) { lockHandle = m[1].trim(); break; }
+            }
+
+            if (!lockHandle) {
+                // If XML is small and has no tags, it might be the raw handle
+                if (xml.length < 200 && !xml.includes('<')) {
+                    lockHandle = xml.trim();
+                } else {
+                    console.warn('[adt/lock] Could not parse lockHandle from xml:', xml.substring(0, 200));
+                }
+            }
+
+            console.log(`[adt/lock] lockHandle=${lockHandle}`);
             res.json({ success: true, lockHandle });
         } catch (error) {
             return handleAdtError(res, error, 'lock');
@@ -353,12 +420,15 @@ cds.on('bootstrap', (app) => {
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/set-source  — Upload source code to a locked object
+    // ADT: PUT sourceUrl?lockHandle=<handle>
+    // NOTE: sourceUrl must be the actual source URL (from get-source response),
+    //       not just objectUrl/source/main — classes have different include URLs
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/set-source', async (req, res) => {
         try {
-            const { destinationName, objectUrl, lockHandle, source } = req.body;
+            const { destinationName, objectUrl, sourceUrl, lockHandle, source } = req.body;
             if (!destinationName || !objectUrl || !lockHandle || source === undefined) {
-                return res.status(400).json({ error: 'Missing required fields' });
+                return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, lockHandle, source' });
             }
 
             if (process.env.NODE_ENV !== 'production') {
@@ -367,12 +437,32 @@ cds.on('bootstrap', (app) => {
 
             const jwt = getUserJwt(req);
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
+
+            // Use the sourceUrl if provided (from get-source step), otherwise resolve it
+            let targetSourceUrl = sourceUrl;
+            if (!targetSourceUrl) {
+                // Re-fetch object structure to find source link
+                try {
+                    const structResp = await callAdt(destinationName, jwt, {
+                        method: 'GET', url: objectUrl,
+                        headers: { 'Accept': 'application/xml, application/*+xml' }
+                    });
+                    const structXml = typeof structResp.data === 'string' ? structResp.data : JSON.stringify(structResp.data);
+                    const m = /href="([^"]+)"[^>]*rel="[^"]*\/source[^"]*"/.exec(structXml)
+                        || /rel="[^"]*\/source[^"]*"[^>]*href="([^"]+)"/.exec(structXml);
+                    if (m) {
+                        targetSourceUrl = m[1].startsWith('/') ? m[1] : '/' + m[1];
+                    }
+                } catch (_) { }
+                if (!targetSourceUrl) targetSourceUrl = `${objectUrl}/source/main`;
+            }
+
+            console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
 
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
-                url: `${objectUrl}/source/main?lockHandle=${encodeURIComponent(lockHandle)}`,
+                url: `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
                     'Content-Type': 'text/plain; charset=utf-8',
@@ -380,7 +470,7 @@ cds.on('bootstrap', (app) => {
                 },
                 data: source
             });
-            res.json({ success: true, message: 'Source saved successfully' });
+            res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'set-source');
         }
@@ -416,10 +506,14 @@ cds.on('bootstrap', (app) => {
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/activate  — Activate ABAP objects
+    // ADT: POST /sap/bc/adt/activation/activate_multiple  (multiple objects)
+    //      POST /sap/bc/adt/activation/activate?method=activate&preauditRequested=false
+    //           with XML body containing object references
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/activate', async (req, res) => {
         try {
             const { destinationName, objects } = req.body;
+            // objects: Array of { name, url, type }
             if (!destinationName || !objects || !objects.length) {
                 return res.status(400).json({ error: 'Missing destinationName or objects array' });
             }
@@ -438,23 +532,42 @@ cds.on('bootstrap', (app) => {
 
             const csrfToken = await fetchAdtCsrfToken(destinationName, jwt);
 
-            const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
-<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-${objects.map(o => `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:name="${o.name}" adtcore:type="${o.type}"/>`).join('\n')}
-</adtcore:objectReferences>`;
+            // Build objectReferences XML
+            const objRefs = objects.map(o =>
+                `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:name="${o.name.toUpperCase()}"${o.type ? ` adtcore:type="${o.type}"` : ''}/>`
+            ).join('\n');
 
+            const xmlBody =
+                '<?xml version="1.0" encoding="utf-8"?>\n' +
+                '<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">\n' +
+                objRefs + '\n' +
+                '</adtcore:objectReferences>';
+
+            console.log(`[adt/activate] xml: ${xmlBody}`);
+
+            // Use activate endpoint (works for single and multiple)
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
-                url: `${ADT_BASE}/activation/activate_multiple`,
+                url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
                 headers: {
                     'X-CSRF-Token': csrfToken,
                     'Content-Type': 'application/xml',
-                    'Accept': 'application/xml'
+                    'Accept': 'application/xml, application/vnd.sap.adt.activation.result.v1+xml'
                 },
                 data: xmlBody
             });
 
-            res.json({ success: true, status: response.status });
+            const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+            console.log(`[adt/activate] status=${response.status}, response=${respXml.substring(0, 300)}`);
+
+            // Check for activation errors in response (ADT may return 200 with error messages)
+            const hasError = /<[^>]*type="E"[^>]*>/i.test(respXml) || /<error/i.test(respXml);
+            res.json({
+                success: !hasError,
+                status: response.status,
+                message: hasError ? 'Activation completed with errors' : 'Activated successfully',
+                details: respXml.length < 2000 ? respXml : undefined
+            });
         } catch (error) {
             return handleAdtError(res, error, 'activate');
         }
@@ -462,6 +575,8 @@ ${objects.map(o => `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:na
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // /api/adt/get-source  — Get source code of an existing object
+    // ADT flow: 1) GET objectUrl → XML with links → find source link
+    //           2) GET sourceLink → plain text source code
     // ═══════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/get-source', async (req, res) => {
         try {
@@ -477,14 +592,64 @@ ${objects.map(o => `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:na
 
             const jwt = getUserJwt(req);
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/get-source] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
+            // Step 1: Get object structure to find the correct source URL
+            // ADT uses different source URLs per object type:
+            // - Programs:  objectUrl/source/main
+            // - Classes:   objectUrl/includes/oo_main or similar include
+            // - Functions: objectUrl/source/main
+            let sourceUrl = null;
+
+            try {
+                // Try to get object structure (links)
+                const structResp = await callAdt(destinationName, jwt, {
+                    method: 'GET',
+                    url: objectUrl,
+                    headers: { 'Accept': 'application/vnd.sap.adt.oo.class.v4+xml, application/xml, application/*+xml' }
+                });
+                const structXml = typeof structResp.data === 'string' ? structResp.data : JSON.stringify(structResp.data);
+
+                // Parse source link from objectStructure XML
+                // ADT returns links like: <atom:link href="...source/main" rel="http://www.sap.com/adt/relations/source" title="Source"/>
+                const sourceLinkPattern = /href="([^"]+)"[^>]*rel="[^"]*\/source[^"]*"/;
+                const sourceLinkAlt = /rel="[^"]*\/source[^"]*"[^>]*href="([^"]+)"/;
+                let match = sourceLinkPattern.exec(structXml) || sourceLinkAlt.exec(structXml);
+
+                if (match) {
+                    sourceUrl = match[1];
+                    // sourceUrl might be relative or absolute
+                    if (!sourceUrl.startsWith('/')) {
+                        sourceUrl = '/' + sourceUrl;
+                    }
+                    console.log(`[adt/get-source] user=${logonName}, found source link: ${sourceUrl}`);
+                } else {
+                    // Fallback: check for /source/main in links
+                    const mainMatch = /href="([^"]*\/source\/main[^"]*)"/i.exec(structXml);
+                    if (mainMatch) {
+                        sourceUrl = mainMatch[1];
+                        if (!sourceUrl.startsWith('/')) sourceUrl = '/' + sourceUrl;
+                    }
+                }
+            } catch (structErr) {
+                // objectStructure call failed — fall back to direct /source/main
+                console.warn(`[adt/get-source] objectStructure failed, using fallback. Error: ${structErr.message}`);
+            }
+
+            // Fallback: use standard /source/main path
+            if (!sourceUrl) {
+                sourceUrl = `${objectUrl}/source/main`;
+                console.log(`[adt/get-source] user=${logonName}, using fallback url: ${sourceUrl}`);
+            } else {
+                console.log(`[adt/get-source] user=${logonName}, dest=${destinationName}, source_url=${sourceUrl}`);
+            }
+
+            // Step 2: Get source code from the resolved URL
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
-                url: `${objectUrl}/source/main`,
-                headers: { 'Accept': 'text/plain; charset=utf-8' }
+                url: sourceUrl,
+                headers: { 'Accept': 'text/plain; charset=utf-8, text/plain, */*' }
             });
-            res.json({ success: true, source: response.data });
+            res.json({ success: true, source: response.data, sourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'get-source');
         }
