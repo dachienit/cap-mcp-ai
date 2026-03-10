@@ -310,12 +310,11 @@ cds.on('bootstrap', (app) => {
                 },
                 'CLAS': {
                     uri: 'oo/classes',
-                    contentType: 'application/vnd.sap.adt.oo.classincludes.v4+xml',
+                    contentType: 'application/vnd.sap.adt.oo.classes.v4+xml',
                     xml: (n, pkg, desc, resp) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
-                        `  class:modeled="false" class:final="false" class:visibility="public" class:classType="1"/>`
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}" />`
                 },
                 'INTF': {
                     uri: 'oo/interfaces',
