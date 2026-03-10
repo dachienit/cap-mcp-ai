@@ -90,7 +90,7 @@ cds.on('bootstrap', (app) => {
         } else if (setCookieHeader) {
             cookie = setCookieHeader.split(';')[0];
         }
-        console.log(`[csrf] token=${token?.substring(0, 10) || '(empty)'}, cookie=${cookie?.substring(0, 40) || '(none)'}`);
+        console.log(`[csrf] token=${token?.substring(0, 10) || '(empty)'}, cookie_length=${cookie?.length || 0}`);
         return { token, cookie };
     }
 
@@ -313,9 +313,9 @@ cds.on('bootstrap', (app) => {
                     contentType: 'application/vnd.sap.adt.oo.classincludes.v4+xml',
                     xml: (n, pkg, desc, resp) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
-                        `<oo:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo/classes"\n` +
+                        `<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n` +
                         `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
-                        `  oo:modeled="false" oo:final="true" oo:visibility="public"/>`
+                        `  class:modeled="false" class:final="false" class:visibility="public" class:classType="1"/>`
                 },
                 'INTF': {
                     uri: 'oo/interfaces',
@@ -427,8 +427,6 @@ cds.on('bootstrap', (app) => {
                     console.warn('[adt/lock] Could not parse lockHandle from xml:', xml.substring(0, 200));
                 }
             }
-
-            console.log(`[adt/lock] lockHandle=${lockHandle}, sessionCookie=${csrf.cookie?.substring(0, 40) || 'none'}`);
             res.json({ success: true, lockHandle, sessionCookie: csrf.cookie });
         } catch (error) {
             return handleAdtError(res, error, 'lock');
