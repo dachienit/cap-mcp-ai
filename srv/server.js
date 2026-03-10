@@ -76,9 +76,12 @@ cds.on('bootstrap', (app) => {
         const resp = await callAdt(destinationName, jwt, {
             method: 'GET',
             url: `${ADT_BASE}/core/discovery`,
-            headers: { 'X-CSRF-Token': 'Fetch', 'Accept': 'application/xml' }
+            // Must include atomsvc+xml: this SAP system only serves this format for discovery
+            headers: { 'X-CSRF-Token': 'Fetch', 'Accept': 'application/atomsvc+xml, application/xml, */*' }
         });
-        return resp.headers['x-csrf-token'] || resp.headers['X-CSRF-Token'] || '';
+        const token = resp.headers['x-csrf-token'] || resp.headers['X-CSRF-Token'] || '';
+        console.log(`[csrf] fetched token: ${token?.substring(0, 10) || '(empty)'}`);
+        return token;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
