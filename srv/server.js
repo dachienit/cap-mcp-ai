@@ -756,105 +756,46 @@ cds.on('bootstrap', (app) => {
     });
 
     // ══════════════════════════════════════════════════════════════════════════════════
-    // /api/adt/save-source  — Combined lock + set-source + unlock in ONE handler
+    // /api/adt/save-source  — Combined lock + set-source + unlock via adtSession.js
     //
     // ROOT CAUSE of 423 errors on BTP:
-    //   ADT lock is tied to an ABAP ICM HTTP session, which is tied to a specific
-    //   TCP connection from Cloud Connector to ABAP. CC uses a connection pool:
-    //   - /api/adt/lock  (BTP request 1) → CC picks connection C1 → lock in C1 session
-    //   - /api/adt/set-source (BTP request 2) → CC picks C2 (different!) → 423
+    //   callAdt() uses Cloud SDK executeHttpRequest → Cloud Connector connection pool
+    //   may route lock and set-source calls to DIFFERENT TCP connections → different
+    //   ABAP ICM sessions → lock is tied to session S1 but set-source arrives on S2
+    //   → ABAP rejects with 423 "invalid lock handle".
     //
-    // FIX: Do CSRF fetch + lock + set-source + unlock sequentially in ONE backend
-    //      request handler. Sequential awaits in the same handler are much more
-    //      likely to reuse the same CC connection (C1), keeping the ABAP session alive.
+    // FIX: Use adtSaveSource() from adtSession.js which creates ONE axios instance
+    //      with keepAlive. All 4 sub-requests (CSRF→lock→set-source→unlock) share
+    //      the same TCP connection and ABAP session → lock always remains valid.
     // ══════════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/save-source', async (req, res) => {
         const { objectUrl, sourceUrl: reqSourceUrl, source, transport, destinationName } = req.body;
         if (!objectUrl) return res.status(400).json({ error: 'Missing objectUrl' });
         if (source === undefined || source === null) return res.status(400).json({ error: 'Missing source' });
 
-        const dest   = destinationName || 'T4X_011';
-        const jwt    = getUserJwt(req);
-        const user   = req.authInfo?.getLogonName?.() || 'unknown';
+        const dest = destinationName || 'T4X_011';
+        const jwt  = getUserJwt(req);
+        const user = req.authInfo?.getLogonName?.() || 'unknown';
         const srcUrl = reqSourceUrl || `${objectUrl}/source/main`;
         console.log(`[adt/save-source] user=${user}, dest=${dest}, url=${objectUrl}`);
 
-        let lockHandle = '';
-        let sessionCookie = '';
+        if (process.env.NODE_ENV !== 'production') {
+            return res.json({ success: true, message: `[Mock] Source saved for ${objectUrl}`, sourceUrl: srcUrl });
+        }
 
         try {
-            // ── Step 1: Fetch CSRF token (establishes ABAP session S1 on connection C1)
-            const csrf = await fetchAdtCsrfToken(dest, jwt);
-            console.log(`[adt/save-source] csrf fetched, cookie_len=${csrf.cookie?.length || 0}`);
-
-            // ── Step 2: Lock (must reuse C1/S1 by sending the cookie)
-            const lockResp = await callAdt(dest, jwt, {
-                method:  'POST',
-                url:     `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
-                headers: csrfHeaders(csrf, { 'Accept': '*/*' })
+            const { adtSaveSource } = require('./adtSession');
+            const result = await adtSaveSource({
+                destName:   dest,
+                userJwt:    jwt,
+                objectUrl,
+                sourceUrl:  srcUrl,
+                source,
+                transport,
+                log: (msg) => console.log(msg)
             });
-            const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
-            console.log(`[adt/save-source] lock xml: ${lockXml.substring(0, 200)}`);
-
-            // Parse lockHandle
-            for (const p of [
-                /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i,
-                /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i,
-                /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i
-            ]) {
-                const m = p.exec(lockXml);
-                if (m) { lockHandle = m[1].trim(); break; }
-            }
-            if (!lockHandle && lockXml.length < 200 && !lockXml.includes('<')) {
-                lockHandle = lockXml.trim();
-            }
-            if (!lockHandle) throw Object.assign(new Error('Could not parse lockHandle from ADT response'), { downstreamStatus: 500 });
-
-            // Use lock-response cookie if ABAP issued one; otherwise keep S1 cookie
-            const lockRespCookies = lockResp.headers['set-cookie'];
-            let lockCookie = '';
-            if (Array.isArray(lockRespCookies)) lockCookie = lockRespCookies.map(c => c.split(';')[0]).join('; ');
-            else if (lockRespCookies) lockCookie = lockRespCookies.split(';')[0];
-            sessionCookie = lockCookie || csrf.cookie;
-            const lockCsrf = { token: csrf.token, cookie: sessionCookie };
-            console.log(`[adt/save-source] locked handle=${lockHandle}, session_cookie_len=${sessionCookie?.length || 0}`);
-
-            // ── Step 3: Set source (same C1/S1 → lockHandle is valid)
-            let putUrl = `${srcUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
-            if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
-            await callAdt(dest, jwt, {
-                method:  'PUT',
-                url:     putUrl,
-                headers: csrfHeaders(lockCsrf, { 'Content-Type': 'text/plain; charset=utf-8' }),
-                data:    source
-            });
-            console.log(`[adt/save-source] source saved to ${srcUrl}`);
-
-            // ── Step 4: Unlock (release the session lock)
-            await callAdt(dest, jwt, {
-                method:  'DELETE',
-                url:     `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-                headers: csrfHeaders(lockCsrf)
-            });
-            console.log(`[adt/save-source] unlocked`);
-
-            res.json({ success: true, message: 'Source saved and unlocked', sourceUrl: srcUrl });
-
+            res.json({ success: true, message: 'Source saved and unlocked', sourceUrl: result.sourceUrl });
         } catch (error) {
-            // Attempt cleanup unlock if we have a handle
-            if (lockHandle) {
-                try {
-                    const cleanCsrf = await fetchAdtCsrfToken(dest, jwt);
-                    await callAdt(dest, jwt, {
-                        method:  'DELETE',
-                        url:     `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-                        headers: csrfHeaders({ token: cleanCsrf.token, cookie: sessionCookie || cleanCsrf.cookie })
-                    });
-                    console.log(`[adt/save-source] cleanup unlock done`);
-                } catch (ue) {
-                    console.warn(`[adt/save-source] cleanup unlock failed: ${ue.message}`);
-                }
-            }
             return handleAdtError(res, error, 'save-source');
         }
     });
