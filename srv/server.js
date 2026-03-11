@@ -1,4 +1,4 @@
-﻿const cds = require('@sap/cds');
+const cds = require('@sap/cds');
 
 cds.on('bootstrap', (app) => {
     if (process.env.NODE_ENV === 'production') {
@@ -752,6 +752,223 @@ cds.on('bootstrap', (app) => {
             res.json({ success: true, source: response.data, sourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'get-source');
+        }
+    });
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // AI endpoints — powered by company RAG AI (GPT/Gemini via DIA Brain)
+    // Pattern: OAuth2 client_credentials token → DIA_HISTORY → DIA_CHAT_RAG
+    // ══════════════════════════════════════════════════════════════════════════════════
+    const { agenticChat, createHistory } = require('./ai-service');
+
+    // POST /api/ai/history — Create a new chat history session
+    app.post('/api/ai/history', async (req, res) => {
+        try {
+            const { agenticChat: _, createHistory: ch, getTokenCached } = require('./ai-service');
+            const token = await getTokenCached();
+            const historyId = await createHistory(token);
+            res.json({ success: true, historyId });
+        } catch (err) {
+            console.error('[ai/history] Error:', err.message);
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // POST /api/ai/chat — Run agentic AI chat with ADT tool execution
+    app.post('/api/ai/chat', async (req, res) => {
+        const { message, historyId, destinationName } = req.body;
+        if (!message) return res.status(400).json({ error: 'Missing message' });
+
+        const dest = destinationName || 'T4X_011';
+
+        try {
+            const jwt = getUserJwt(req);
+
+            /**
+             * Tool executor — maps tool_call names to existing ADT endpoints.
+             * The AI calls these tools by name; the server executes them
+             * using the same helpers (callAdt, csrf, etc.) already in server.js.
+             */
+            const toolExecutor = async (toolName, params) => {
+                console.log(`[ai/tool] executing tool=${toolName}`);
+
+                switch (toolName) {
+
+                    case 'search_object': {
+                        const response = await callAdt(dest, jwt, {
+                            method: 'GET',
+                            url: `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(params.query)}${params.objectType ? `&objectType=${params.objectType}` : ''}&maxResults=${params.maxResults || 50}`,
+                            headers: { 'Accept': 'application/xml, application/vnd.sap.adt.repository.informationsystem.lists.v1+xml' }
+                        });
+                        const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+                        // Parse objects from ADT search XML
+                        const items = [];
+                        const re = /adtcore:uri="([^"]*)"[^>]*adtcore:type="([^"]*)"[^>]*adtcore:name="([^"]*)"(?:[^>]*adtcore:packageName="([^"]*)")?(?:[^>]*adtcore:description="([^"]*)")?/g;
+                        let m;
+                        while ((m = re.exec(xml)) !== null) {
+                            items.push({ url: m[1], type: m[2], name: m[3], packageName: m[4] || '', description: m[5] || '' });
+                        }
+                        return { success: true, count: items.length, data: items };
+                    }
+
+                    case 'search_package': {
+                        const response = await callAdt(dest, jwt, {
+                            method: 'GET',
+                            url: `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(params.query)}&objectType=DEVC&maxResults=${params.maxResults || 20}`,
+                            headers: { 'Accept': 'application/xml, application/vnd.sap.adt.repository.informationsystem.lists.v1+xml' }
+                        });
+                        const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+                        const items = [];
+                        const re = /adtcore:uri="([^"]*)"[^>]*adtcore:type="([^"]*)"[^>]*adtcore:name="([^"]*)"(?:[^>]*adtcore:description="([^"]*)")?/g;
+                        let m;
+                        while ((m = re.exec(xml)) !== null) {
+                            if (m[2] === 'DEVC/K') {
+                                items.push({ url: m[1], name: m[3], description: m[4] || '' });
+                            }
+                        }
+                        return { success: true, count: items.length, data: items };
+                    }
+
+                    case 'get_source': {
+                        const srcUrl = params.objectUrl.includes('/source/main')
+                            ? params.objectUrl
+                            : `${params.objectUrl}/source/main`;
+                        const response = await callAdt(dest, jwt, {
+                            method: 'GET', url: srcUrl,
+                            headers: { 'Accept': 'text/plain, */*' }
+                        });
+                        return { success: true, source: response.data, sourceUrl: srcUrl };
+                    }
+
+                    case 'create_object': {
+                        // Normalize type
+                        const rawType = params.objectType || 'CLAS/OC';
+                        const baseType = rawType.includes('/') ? rawType.split('/')[0] : rawType;
+                        const typeMap = {
+                            CLAS: { uri: 'oo/classes', ct: 'application/vnd.sap.adt.oo.classes.v4+xml',
+                                xml: (n, pkg, d, pkgPath) =>
+                                    `<?xml version="1.0" encoding="utf-8"?>\n<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}" class:visibility="public">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</class:abapClass>`
+                            },
+                            PROG: { uri: 'programs/programs', ct: 'application/vnd.sap.adt.programs.programs.v2+xml',
+                                xml: (n, pkg, d, pkgPath) =>
+                                    `<?xml version="1.0" encoding="utf-8"?>\n<program:abapProgram xmlns:adtcore="http://www.sap.com/adt/core" xmlns:program="http://www.sap.com/adt/programs/programs"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}" program:programType="executableProgram">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</program:abapProgram>`
+                            },
+                            INTF: { uri: 'oo/interfaces', ct: 'application/vnd.sap.adt.oo.interface.v2+xml',
+                                xml: (n, pkg, d, pkgPath) =>
+                                    `<?xml version="1.0" encoding="utf-8"?>\n<oo:interface xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</oo:interface>`
+                            }
+                        };
+                        const cfg = typeMap[baseType];
+                        if (!cfg) throw new Error(`Unsupported objectType: ${rawType}`);
+                        const cleanName = (params.name || '').toUpperCase();
+                        const cleanPkg  = (params.packageName || '').toUpperCase();
+                        const cleanDesc = (params.description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+                        const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, params.parentPath || '');
+                        const postUrl = params.transport ? `${ADT_BASE}/${cfg.uri}?corrNr=${encodeURIComponent(params.transport)}` : `${ADT_BASE}/${cfg.uri}`;
+                        const csrf = await fetchAdtCsrfToken(dest, jwt);
+                        const response = await callAdt(dest, jwt, {
+                            method: 'POST', url: postUrl,
+                            headers: csrfHeaders(csrf, { 'Content-Type': cfg.ct, 'Accept': '*/*' }),
+                            data: xmlBody
+                        });
+                        const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
+                        return { success: true, objectUrl };
+                    }
+
+                    case 'lock': {
+                        const csrf = await fetchAdtCsrfToken(dest, jwt);
+                        const response = await callAdt(dest, jwt, {
+                            method: 'POST',
+                            url: `${params.objectUrl}?_action=LOCK&accessMode=MODIFY`,
+                            headers: csrfHeaders(csrf, { 'Accept': '*/*' })
+                        });
+                        const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+                        let lockHandle = '';
+                        for (const p of [/<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i, /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i]) {
+                            const m = p.exec(xml);
+                            if (m) { lockHandle = m[1].trim(); break; }
+                        }
+                        // Extract session cookie from lock RESPONSE (not CSRF fetch)
+                        const lockRespSetCookie = response.headers['set-cookie'];
+                        let lockSessionCookie = '';
+                        if (Array.isArray(lockRespSetCookie)) lockSessionCookie = lockRespSetCookie.map(c => c.split(';')[0]).join('; ');
+                        else if (lockRespSetCookie) lockSessionCookie = lockRespSetCookie.split(';')[0];
+                        const sessionCookie = lockSessionCookie || csrf.cookie;
+                        return { success: true, lockHandle, sessionCookie, csrfToken: csrf.token };
+                    }
+
+                    case 'set_source': {
+                        const srcUrl = params.sourceUrl || `${params.objectUrl}/source/main`;
+                        let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
+                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
+                        let putUrl = `${srcUrl}?lockHandle=${encodeURIComponent(params.lockHandle)}`;
+                        if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
+                        await callAdt(dest, jwt, {
+                            method: 'PUT', url: putUrl,
+                            headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8' }),
+                            data: params.source || ''
+                        });
+                        return { success: true, message: 'Source saved', sourceUrl: srcUrl };
+                    }
+
+                    case 'unlock': {
+                        let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
+                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
+                        await callAdt(dest, jwt, {
+                            method: 'DELETE',
+                            url: `${params.objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(params.lockHandle)}`,
+                            headers: csrfHeaders(csrf)
+                        });
+                        return { success: true, message: 'Object unlocked' };
+                    }
+
+                    case 'activate': {
+                        const csrf = await fetchAdtCsrfToken(dest, jwt);
+                        const normalized = (params.objects || []).map(o => ({
+                            uri:       o.url || o['adtcore:uri'] || '',
+                            name:      (o.name || o['adtcore:name'] || '').toUpperCase(),
+                            type:      o.type || o['adtcore:type'] || '',
+                            parentUri: o.parentUri || o['adtcore:parentUri'] || ''
+                        }));
+                        const objRefs = normalized.map(o => {
+                            let attrs = `adtcore:uri="${o.uri}" adtcore:name="${o.name}"`;
+                            if (o.type)      attrs += ` adtcore:type="${o.type}"`;
+                            if (o.parentUri) attrs += ` adtcore:parentUri="${o.parentUri}"`;
+                            return `  <adtcore:objectReference ${attrs}/>`;
+                        }).join('\n');
+                        const xmlBody = `<?xml version="1.0" encoding="utf-8"?>\n<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">\n${objRefs}\n</adtcore:objectReferences>`;
+                        const response = await callAdt(dest, jwt, {
+                            method: 'POST',
+                            url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
+                            headers: csrfHeaders(csrf, { 'Content-Type': 'application/xml', 'Accept': 'application/xml, */*' }),
+                            data: xmlBody
+                        });
+                        const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+                        const hasError = /<[^>]*type="E"[^>]*>/i.test(respXml) || /<error/i.test(respXml);
+                        return { success: !hasError, message: hasError ? 'Activation completed with errors' : 'Activated successfully' };
+                    }
+
+                    case 'create_test_include': {
+                        const cleanClas = (params.clas || '').toLowerCase();
+                        let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
+                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
+                        let putUrl = `${ADT_BASE}/oo/classes/${cleanClas}/includes/testclasses?lockHandle=${encodeURIComponent(params.lockHandle)}`;
+                        if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
+                        await callAdt(dest, jwt, { method: 'PUT', url: putUrl, headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8' }), data: '' });
+                        return { success: true, message: `Test include created for ${(params.clas || '').toUpperCase()}` };
+                    }
+
+                    default:
+                        throw new Error(`Unknown tool: ${toolName}`);
+                }
+            };
+
+            const result = await agenticChat(message, historyId || null, dest, toolExecutor);
+            res.json({ success: true, ...result });
+
+        } catch (err) {
+            console.error('[ai/chat] Error:', err.message);
+            res.status(500).json({ error: err.message });
         }
     });
 });

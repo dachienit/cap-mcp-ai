@@ -4,11 +4,13 @@ import { fetchUserInfo } from './api.js';
 import SearchPanel from './components/SearchPanel.jsx';
 import CreatePanel from './components/CreatePanel.jsx';
 import EditorPanel from './components/EditorPanel.jsx';
+import AiPanel from './components/AiPanel.jsx';
 
 const TABS = [
   { id: 'search', icon: '🔍', label: 'Search Objects' },
   { id: 'create', icon: '＋', label: 'Create Object' },
   { id: 'editor', icon: '</>', label: 'Source Editor' },
+  { id: 'ai',     icon: '✦',  label: 'AI Assistant' },
 ];
 
 // ─── Toast Manager ────────────────────────────────────────────────────────────
@@ -160,6 +162,11 @@ export default function App() {
               destinationName={destinationName}
               initialObject={selectedObject}
               addToast={addToast}
+            />
+          )}
+          {activeTab === 'ai' && (
+            <AiPanel
+              destinationName={destinationName}
             />
           )}
         </main>
