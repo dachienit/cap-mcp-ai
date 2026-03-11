@@ -86,6 +86,20 @@ export async function setObjectSource(destinationName, objectUrl, lockHandle, so
 }
 
 /**
+ * Combined lock + set-source + unlock in ONE backend request.
+ * Fixes the 423 "invalid lock handle" error on BTP caused by Cloud Connector
+ * using different TCP connections (and different ABAP sessions) for separate requests.
+ * @param {string} destinationName
+ * @param {string} objectUrl  - ADT object URI (e.g. /sap/bc/adt/oo/classes/zcl_my_class)
+ * @param {string} source     - ABAP source code to save
+ * @param {string} sourceUrl  - Specific source URL (optional, defaults to objectUrl/source/main)
+ * @param {string} transport  - Transport request number (optional)
+ */
+export async function saveObjectSource(destinationName, objectUrl, source, sourceUrl = null, transport = null) {
+    return post('/api/adt/save-source', { destinationName, objectUrl, source, sourceUrl, transport });
+}
+
+/**
  * Unlock an ABAP object
  */
 export async function unlock(destinationName, objectUrl, lockHandle, sessionCookie = null, lockCsrfToken = null) {

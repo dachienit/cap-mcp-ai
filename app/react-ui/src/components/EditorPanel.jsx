@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { getObjectSource, lockObject, setObjectSource, unlock, activateObjects } from '../api.js';
+import { getObjectSource, lockObject, setObjectSource, saveObjectSource, unlock, activateObjects } from '../api.js';
 
 export default function EditorPanel({ destinationName, initialObject, addToast }) {
     const [objectUrl, setObjectUrl] = useState(initialObject?.url || '');
@@ -51,13 +51,19 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
         } finally { setLoadingState(''); }
     };
 
-    // ── Save source
+    // ── Save source (COMBINED: lock + set-source + unlock in one backend call)
+    // This fixes the 423 "invalid lock handle" error on BTP caused by Cloud Connector
+    // using different TCP connections (different ABAP sessions) for separate requests.
     const handleSave = async () => {
-        if (!isLocked) { addToast('Lock the object first before saving', 'warning'); return; }
+        if (!isLoaded) { addToast('Load the source first before saving', 'warning'); return; }
+        if (!source.trim()) { addToast('Source is empty', 'warning'); return; }
         setLoadingState('saving');
+        // Clear any existing lock state — save-source handles its own lock internally
+        setLockHandle(null); setSessionCookie(null); setLockCsrfToken(null);
         try {
-            // Pass sourceUrl so backend uses the correct include URL (critical for ABAP Classes)
-            await setObjectSource(destinationName, objectUrl.trim(), lockHandle, source, sourceUrl, sessionCookie, lockCsrfToken);
+            // /api/adt/save-source does CSRF + lock + PUT + unlock in a single handler
+            // so all 4 ADT calls share the same Cloud Connector TCP connection → same ABAP session
+            await saveObjectSource(destinationName, objectUrl.trim(), source, sourceUrl);
             setOriginalSource(source); setIsDirty(false);
             addToast('✅ Source saved successfully', 'success');
         } catch (e) {
