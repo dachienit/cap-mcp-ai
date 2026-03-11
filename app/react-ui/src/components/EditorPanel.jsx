@@ -194,7 +194,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                     value={source}
                     onChange={handleSourceChange}
                     placeholder={isLoaded ? '' : `Enter an Object URL above and click "Load Source" to begin editing.\n\nExample:\n  /sap/adt/programs/programs/Z_MY_PROGRAM`}
-                    readOnly={!isLocked}
+                    readOnly={!isLoaded}
                     spellCheck={false}
                     style={{ opacity: isLoaded ? 1 : 0.7 }}
                 />
@@ -215,8 +215,8 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                         id="btn-save-source"
                         className="btn btn-success"
                         onClick={handleSave}
-                        disabled={busy || !isLocked}
-                        title="Save source to on-prem system"
+                        disabled={busy || !isLoaded}
+                        title="Lock, save, and unlock in one step"
                     >
                         {loadingState === 'saving' ? <><span className="spinner" /> Saving…</> : 'Save Source'}
                     </button>
@@ -243,11 +243,11 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                 </div>
 
                 {/* Workflow hint */}
-                {isLoaded && !isLocked && (
+                {isLoaded && (
                     <div className="alert info" style={{ marginTop: 'var(--space-3)' }}>
                         <span>💡</span>
                         <div>
-                            <strong>Editing Workflow:</strong> Lock → Edit source → Save → Unlock → Activate
+                            <strong>Editing Workflow:</strong> Load Source → Edit → <strong>Save Source</strong> (auto lock/unlock) → Activate
                         </div>
                     </div>
                 )}
