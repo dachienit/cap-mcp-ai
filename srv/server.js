@@ -279,72 +279,89 @@ cds.on('bootstrap', (app) => {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/create-object', async (req, res) => {
         try {
-            const { destinationName, objectType, name, packageName, description, responsible } = req.body;
+            const {
+                destinationName, objectType, name, packageName,
+                description, responsible,
+                parentPath,   // URL of the parent package (e.g. /sap/bc/adt/packages/zpk_iyh1hc)
+                transport     // Transport request number (e.g. T4XK903271), auto-created if empty
+            } = req.body;
             if (!destinationName || !objectType || !name || !packageName) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectType, name, packageName' });
             }
+
+            // Normalize objectType: CLAS/OC -> CLAS, CLAS/OCX -> CLAS, PROG/I -> PROG, etc.
+            const baseType = objectType.includes('/') ? objectType.split('/')[0] : objectType;
 
             if (process.env.NODE_ENV !== 'production') {
                 return res.json({
                     success: true,
                     message: `[Mock] Object ${name} of type ${objectType} created in package ${packageName}`,
-                    objectUrl: `${ADT_BASE}/programs/programs/${name.toLowerCase()}`
+                    objectUrl: `${ADT_BASE}/oo/classes/${name.toLowerCase()}`
                 });
             }
 
             const jwt = getUserJwt(req);
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/create-object] user=${logonName}, dest=${destinationName}, type=${objectType}, name=${name}`);
-
+            console.log(`[adt/create-object] user=${logonName}, dest=${destinationName}, type=${objectType}(base=${baseType}), name=${name}, parentPath=${parentPath}, transport=${transport}`);
 
             // Each object type has its own ADT URI path and XML schema
             const typeConfig = {
                 'PROG': {
                     uri: 'programs/programs',
                     contentType: 'application/vnd.sap.adt.programs.programs.v2+xml',
-                    xml: (n, pkg, desc, resp) =>
+                    xml: (n, pkg, desc, resp, pkgPath) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<program:abapProgram xmlns:adtcore="http://www.sap.com/adt/core" xmlns:program="http://www.sap.com/adt/programs/programs"\n` +
                         `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
-                        `  program:programType="executableProgram"/>`
+                        `  program:programType="executableProgram">\n` +
+                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `</program:abapProgram>`
                 },
                 'CLAS': {
                     uri: 'oo/classes',
                     contentType: 'application/vnd.sap.adt.oo.classes.v4+xml',
-                    xml: (n, pkg, desc, resp) =>
+                    xml: (n, pkg, desc, resp, pkgPath) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}" />`
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}" class:visibility="public">\n` +
+                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `</class:abapClass>`
                 },
                 'INTF': {
                     uri: 'oo/interfaces',
                     contentType: 'application/vnd.sap.adt.oo.interface.v2+xml',
-                    xml: (n, pkg, desc, resp) =>
+                    xml: (n, pkg, desc, resp, pkgPath) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<oo:interface xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"/>`
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
+                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `</oo:interface>`
                 },
                 'FUGR': {
                     uri: 'functions/groups',
                     contentType: 'application/vnd.sap.adt.functions.groups.v3+xml',
-                    xml: (n, pkg, desc, resp) =>
+                    xml: (n, pkg, desc, resp, pkgPath) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<funcgrp:abapFunctionGroup xmlns:adtcore="http://www.sap.com/adt/core" xmlns:funcgrp="http://www.sap.com/adt/functions/groups"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"/>`
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
+                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `</funcgrp:abapFunctionGroup>`
                 },
                 'DEVC': {
                     uri: 'packages',
                     contentType: 'application/vnd.sap.adt.packages.v1+xml',
-                    xml: (n, pkg, desc, resp) =>
+                    xml: (n, pkg, desc, resp, pkgPath) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<pak:package xmlns:adtcore="http://www.sap.com/adt/core" xmlns:pak="http://www.sap.com/adt/packages"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"/>`
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
+                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `</pak:package>`
                 }
             };
 
-            const cfg = typeConfig[objectType];
+            const cfg = typeConfig[baseType];
             if (!cfg) {
-                return res.status(400).json({ error: `Unsupported object type: ${objectType}. Supported: PROG, CLAS, INTF, FUGR, DEVC` });
+                return res.status(400).json({ error: `Unsupported object type: ${objectType} (base: ${baseType}). Supported: PROG, CLAS, INTF, FUGR, DEVC` });
             }
 
             const cleanName = name.toUpperCase();
@@ -352,14 +369,19 @@ cds.on('bootstrap', (app) => {
             const cleanDesc = (description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
             const cleanResp = (responsible || logonName || 'DEVELOPER').toUpperCase();
 
-            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp);
+            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp, parentPath || '');
             console.log(`[adt/create-object] xmlBody: ${xmlBody}`);
-            console.log(`[adt/create-object] contentType: ${cfg.contentType}, url: ${ADT_BASE}/${cfg.uri}`);
+
+            // Append transport number if provided
+            const postUrl = transport
+                ? `${ADT_BASE}/${cfg.uri}?corrNr=${encodeURIComponent(transport)}`
+                : `${ADT_BASE}/${cfg.uri}`;
+            console.log(`[adt/create-object] POST url: ${postUrl}`);
 
             const csrf = await fetchAdtCsrfToken(destinationName, jwt);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
-                url: `${ADT_BASE}/${cfg.uri}`,
+                url: postUrl,
                 headers: csrfHeaders(csrf, { 'Content-Type': cfg.contentType, 'Accept': '*/*' }),
                 data: xmlBody
             });
@@ -440,7 +462,11 @@ cds.on('bootstrap', (app) => {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/set-source', async (req, res) => {
         try {
-            const { destinationName, objectUrl, sourceUrl, lockHandle, sessionCookie, lockCsrfToken, source } = req.body;
+            const {
+                destinationName, objectUrl, sourceUrl, lockHandle,
+                sessionCookie, lockCsrfToken, source,
+                transport  // optional Transport request number
+            } = req.body;
             if (!destinationName || !objectUrl || !lockHandle || source === undefined) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, lockHandle, source' });
             }
@@ -472,6 +498,8 @@ cds.on('bootstrap', (app) => {
             }
 
             console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
+            console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
+            console.log(`[adt/set-source] => REQ.BODY: sessionCookie=${!!sessionCookie}, lockCsrfToken: ${!!lockCsrfToken}`);
 
             // Use the session cookie and CSRF token provided by the client (from the lock step)
             // This guarantees SAP sees the EXACT SAME session and token for this write operation.
@@ -482,9 +510,14 @@ cds.on('bootstrap', (app) => {
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
 
+            // Build PUT URL: lockHandle required, corrNr (transport) optional
+            let putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
+            if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
+            console.log(`[adt/set-source] PUT url: ${putUrl}`);
+
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
-                url: `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`,
+                url: putUrl,
                 headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8', 'Accept': 'text/plain, */*' }),
                 data: source
             });
@@ -509,6 +542,7 @@ cds.on('bootstrap', (app) => {
             const jwt = getUserJwt(req);
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/unlock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
+            console.log(`[adt/unlock] => REQ.BODY: sessionCookie=${!!sessionCookie}, lockCsrfToken=${!!lockCsrfToken}`);
 
             let csrf = { cookie: sessionCookie, token: lockCsrfToken };
             if (!csrf.token || !csrf.cookie) {
@@ -536,7 +570,8 @@ cds.on('bootstrap', (app) => {
     app.post('/api/adt/activate', async (req, res) => {
         try {
             const { destinationName, objects } = req.body;
-            // objects: Array of { name, url, type }
+            // objects: Array of { name, url, type, parentUri }
+            // OR MCP_ABAP format: { 'adtcore:uri', 'adtcore:type', 'adtcore:name', 'adtcore:parentUri' }
             if (!destinationName || !objects || !objects.length) {
                 return res.status(400).json({ error: 'Missing destinationName or objects array' });
             }
@@ -545,20 +580,34 @@ cds.on('bootstrap', (app) => {
                 return res.json({
                     success: true,
                     message: `[Mock] Activated ${objects.length} object(s)`,
-                    activated: objects.map(o => o.name)
+                    activated: objects.map(o => o.name || o['adtcore:name'])
                 });
             }
 
             const jwt = getUserJwt(req);
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/activate] user=${logonName}, dest=${destinationName}, objects=${objects.map(o => o.name).join(',')}`);
+
+            // Normalize both input formats:
+            //   Simple:   { name, url, type, parentUri }
+            //   MCP_ABAP: { 'adtcore:uri', 'adtcore:type', 'adtcore:name', 'adtcore:parentUri' }
+            const normalized = objects.map(o => ({
+                name: (o.name || o['adtcore:name'] || '').toUpperCase(),
+                uri: o.url || o['adtcore:uri'] || '',
+                type: o.type || o['adtcore:type'] || '',
+                parentUri: o.parentUri || o['adtcore:parentUri'] || ''
+            }));
+
+            console.log(`[adt/activate] user=${logonName}, dest=${destinationName}, objects=${normalized.map(o => o.name).join(',')}`);
 
             const csrf = await fetchAdtCsrfToken(destinationName, jwt);
 
-            // Build objectReferences XML
-            const objRefs = objects.map(o =>
-                `  <adtcore:objectReference adtcore:uri="${o.url}" adtcore:name="${o.name.toUpperCase()}"${o.type ? ` adtcore:type="${o.type}"` : ''}/>`
-            ).join('\n');
+            // Build objectReferences XML — include type and parentUri if present
+            const objRefs = normalized.map(o => {
+                let attrs = `adtcore:uri="${o.uri}" adtcore:name="${o.name}"`;
+                if (o.type) attrs += ` adtcore:type="${o.type}"`;
+                if (o.parentUri) attrs += ` adtcore:parentUri="${o.parentUri}"`;
+                return `  <adtcore:objectReference ${attrs}/>`;
+            }).join('\n');
 
             const xmlBody =
                 '<?xml version="1.0" encoding="utf-8"?>\n' +
@@ -568,7 +617,6 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/activate] xml: ${xmlBody}`);
 
-            // Use activate endpoint (works for single and multiple)
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
@@ -582,7 +630,6 @@ cds.on('bootstrap', (app) => {
             const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/activate] status=${response.status}, response=${respXml.substring(0, 300)}`);
 
-            // Check for activation errors in response (ADT may return 200 with error messages)
             const hasError = /<[^>]*type="E"[^>]*>/i.test(respXml) || /<error/i.test(respXml);
             res.json({
                 success: !hasError,
@@ -592,6 +639,60 @@ cds.on('bootstrap', (app) => {
             });
         } catch (error) {
             return handleAdtError(res, error, 'activate');
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // /api/adt/create-test-include — Create test include (CLAS/OCX) for an existing class
+    // ADT: PUT /sap/bc/adt/oo/classes/<clas>/includes/testclasses?lockHandle=<h>
+    // Must lock the class first → pass lockHandle from lock step
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    app.post('/api/adt/create-test-include', async (req, res) => {
+        try {
+            const {
+                destinationName,
+                clas,           // class name e.g. ZCL_MY_CLASS
+                lockHandle,     // from lock step
+                sessionCookie,  // from lock step
+                lockCsrfToken,  // from lock step
+                transport       // optional TR number
+            } = req.body;
+            if (!destinationName || !clas || !lockHandle) {
+                return res.status(400).json({ error: 'Missing required fields: destinationName, clas, lockHandle' });
+            }
+
+            if (process.env.NODE_ENV !== 'production') {
+                return res.json({ success: true, message: `[Mock] Test include created for ${clas}` });
+            }
+
+            const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            const cleanClas = clas.toLowerCase();
+            console.log(`[adt/create-test-include] user=${logonName}, dest=${destinationName}, clas=${cleanClas}, transport=${transport}`);
+
+            let csrf = { cookie: sessionCookie, token: lockCsrfToken };
+            if (!csrf.token || !csrf.cookie) {
+                csrf = await fetchAdtCsrfToken(destinationName, jwt);
+                if (sessionCookie) csrf.cookie = sessionCookie;
+            }
+
+            // Build URL: test class include endpoint with lockHandle
+            let putUrl = `${ADT_BASE}/oo/classes/${cleanClas}/includes/testclasses?lockHandle=${encodeURIComponent(lockHandle)}`;
+            if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
+            console.log(`[adt/create-test-include] PUT url: ${putUrl}`);
+
+            await callAdt(destinationName, jwt, {
+                method: 'PUT',
+                url: putUrl,
+                headers: csrfHeaders(csrf, {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Accept': '*/*'
+                }),
+                data: ''  // empty body creates the test include
+            });
+            res.json({ success: true, message: `Test include created for class ${clas.toUpperCase()}` });
+        } catch (error) {
+            return handleAdtError(res, error, 'create-test-include');
         }
     });
 

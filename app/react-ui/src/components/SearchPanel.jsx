@@ -59,7 +59,7 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
             {/* ── Object Search ─────────────────────────────── */}
             <div className="card">
                 <div className="card-title">
-                    <span className="icon icon-blue">🔍</span>
+                    <span className="icon icon-blue">&#9906;</span>
                     Search ABAP Objects
                 </div>
                 <div className="row">
@@ -93,15 +93,14 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                             onClick={handleSearchObj}
                             disabled={objLoading}
                         >
-                            {objLoading ? <span className="spinner" /> : '🔍'}
-                            {objLoading ? 'Searching…' : 'Search'}
+                            {objLoading ? <><span className="spinner" />Searching…</> : 'Search'}
                         </button>
                     </div>
                 </div>
 
                 {objResults !== null && objResults.length === 0 && (
                     <div className="empty-state" style={{ padding: '2rem' }}>
-                        <div className="empty-icon">📭</div>
+                        <div className="empty-icon">○</div>
                         <div className="empty-title">No objects found</div>
                         <div className="empty-desc">Try a different search term or object type</div>
                     </div>
@@ -120,7 +119,7 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                                     onClick={() => onSelectObject(selectedObj)}
                                     id="btn-open-in-editor"
                                 >
-                                    📝 Open in Editor
+                                    Open in Editor
                                 </button>
                             )}
                         </div>
@@ -165,7 +164,7 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
             {/* ── Package Search ────────────────────────────── */}
             <div className="card">
                 <div className="card-title">
-                    <span className="icon icon-purple">📦</span>
+                    <span className="icon icon-purple">&#9783;</span>
                     Search Packages
                 </div>
                 <div className="row">
@@ -188,15 +187,14 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                             onClick={handleSearchPkg}
                             disabled={pkgLoading}
                         >
-                            {pkgLoading ? <span className="spinner" /> : '📦'}
-                            {pkgLoading ? 'Searching…' : 'Search'}
+                            {pkgLoading ? <><span className="spinner" />Searching…</> : 'Search'}
                         </button>
                     </div>
                 </div>
 
                 {pkgResults !== null && pkgResults.length === 0 && (
                     <div className="empty-state" style={{ padding: '2rem' }}>
-                        <div className="empty-icon">📭</div>
+                        <div className="empty-icon">○</div>
                         <div className="empty-title">No packages found</div>
                     </div>
                 )}

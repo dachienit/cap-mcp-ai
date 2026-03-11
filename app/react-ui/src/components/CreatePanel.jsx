@@ -2,10 +2,10 @@ import { useState } from 'react';
 import { createObject } from '../api.js';
 
 const OBJECT_TYPES = [
-    { value: 'PROG', label: '🟢 Program (PROG)', template: `REPORT z_<name>.\n\nSTART-OF-SELECTION.\n  WRITE: / 'Hello World'.` },
-    { value: 'CLAS', label: '🟣 Class (CLAS)', template: `CLASS zcl_<name> DEFINITION PUBLIC FINAL CREATE PUBLIC.\n  PUBLIC SECTION.\n    METHODS: run.\nENDCLASS.\n\nCLASS zcl_<name> IMPLEMENTATION.\n  METHOD run.\n    WRITE: / 'Hello from class'.\n  ENDMETHOD.\nENDCLASS.` },
-    { value: 'INTF', label: '🔴 Interface (INTF)', template: `INTERFACE zif_<name> PUBLIC.\n  METHODS: execute.\nENDINTERFACE.` },
-    { value: 'FUGR', label: '🟠 Function Group (FUGR)', template: `FUNCTION-POOL z<name>.` },
+    { value: 'PROG', label: 'Program (PROG)', template: `REPORT z_<name>.\n\nSTART-OF-SELECTION.\n  WRITE: / 'Hello World'.` },
+    { value: 'CLAS', label: 'Class (CLAS)', template: `CLASS zcl_<name> DEFINITION PUBLIC FINAL CREATE PUBLIC.\n  PUBLIC SECTION.\n    METHODS: run.\nENDCLASS.\n\nCLASS zcl_<name> IMPLEMENTATION.\n  METHOD run.\n    WRITE: / 'Hello from class'.\n  ENDMETHOD.\nENDCLASS.` },
+    { value: 'INTF', label: 'Interface (INTF)', template: `INTERFACE zif_<name> PUBLIC.\n  METHODS: execute.\nENDINTERFACE.` },
+    { value: 'FUGR', label: 'Function Group (FUGR)', template: `FUNCTION-POOL z<name>.` },
 ];
 
 export default function CreatePanel({ destinationName, addToast }) {
@@ -31,7 +31,7 @@ export default function CreatePanel({ destinationName, addToast }) {
         try {
             const res = await createObject({ ...form, destinationName, name: form.name.toUpperCase(), packageName: form.packageName.toUpperCase() });
             setResult(res);
-            addToast(`✅ Object ${form.name.toUpperCase()} created successfully!`, 'success');
+            addToast(`Object ${form.name.toUpperCase()} created successfully!`, 'success');
         } catch (e) {
             addToast(e.message, 'error');
         } finally { setLoading(false); }
@@ -46,7 +46,7 @@ export default function CreatePanel({ destinationName, addToast }) {
         <div className="panel">
             <div className="card">
                 <div className="card-title">
-                    <span className="icon icon-green">✨</span>
+                    <span className="icon icon-green">+</span>
                     Create New ABAP Object
                 </div>
 
@@ -121,8 +121,8 @@ export default function CreatePanel({ destinationName, addToast }) {
                 </div>
 
                 {result && (
-                    <div className="alert success" style={{ marginBottom: 'var(--space-3)' }}>
-                        <span>✅</span>
+                    <div className="alert success" style={{ marginBottom: 'var(--sp-3)' }}>
+                        <span>&#10003;</span>
                         <div>
                             <div style={{ fontWeight: 600 }}>Object created successfully!</div>
                             {result.objectUrl && (
@@ -140,7 +140,7 @@ export default function CreatePanel({ destinationName, addToast }) {
                         onClick={handleCreate}
                         disabled={loading || !form.name}
                     >
-                        {loading ? <><span className="spinner" /> Creating…</> : <>✨ Create Object</>}
+                        {loading ? <><span className="spinner" />Creating…</> : 'Create Object'}
                     </button>
                     <button className="btn btn-ghost" onClick={handleReset} disabled={loading}>
                         ↩ Reset
@@ -151,7 +151,7 @@ export default function CreatePanel({ destinationName, addToast }) {
             {/* Quick Reference */}
             <div className="card">
                 <div className="card-title">
-                    <span className="icon icon-orange">💡</span>
+                    <span className="icon icon-orange">i</span>
                     Quick Reference — Naming Conventions
                 </div>
                 <div className="table-wrapper">

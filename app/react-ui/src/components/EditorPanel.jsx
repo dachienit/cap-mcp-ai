@@ -106,7 +106,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
             {/* ── Object Loader Card ──────────────────────── */}
             <div className="card">
                 <div className="card-title">
-                    <span className="icon icon-blue">📂</span>
+                    <span className="icon icon-blue">⧉</span>
                     Load ABAP Object
                 </div>
                 <div className="row">
@@ -148,7 +148,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                             onClick={handleLoad}
                             disabled={busy}
                         >
-                            {loadingState === 'loading' ? <><span className="spinner" /> Loading…</> : <>📂 Load Source</>}
+                            {loadingState === 'loading' ? <><span className="spinner" /> Loading…</> : 'Load Source'}
                         </button>
                     </div>
                 </div>
@@ -157,11 +157,11 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
             {/* ── Editor Card ─────────────────────────────── */}
             <div className="card">
                 <div className="card-title">
-                    <span className="icon icon-purple">💻</span>
+                    <span className="icon icon-purple">&lt;/&gt;</span>
                     Source Code Editor
                     {hasChanges && (
-                        <span style={{ marginLeft: 'auto', background: 'var(--warning-light)', color: 'var(--warning)', borderRadius: 'var(--radius-full)', padding: '2px 10px', fontSize: 12 }}>
-                            ● Unsaved changes
+                        <span style={{ marginLeft: 'auto', background: 'var(--warn-bg)', color: 'var(--warn)', borderRadius: 'var(--radius-sm)', padding: '2px 10px', fontSize: 12 }}>
+                            Unsaved changes
                         </span>
                     )}
                 </div>
@@ -170,15 +170,14 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                 <div className={`lock-bar ${lockBarStatus}`}>
                     <span>
                         {isLocked
-                            ? `🔒 Locked for editing — Handle: ${lockHandle?.substring(0, 20)}…`
+                            ? `Locked for editing — Handle: ${lockHandle?.substring(0, 20)}…`
                             : isLoaded
-                                ? '🟢 Source loaded — Lock to edit'
-                                : '⚪ No object loaded'}
+                                ? 'Source loaded — Lock to edit'
+                                : 'No object loaded'}
                     </span>
                     {isLocked && (
                         <button id="btn-inline-unlock" className="btn btn-sm btn-ghost" onClick={handleUnlock} disabled={busy}>
-                            {loadingState === 'unlocking' ? <span className="spinner spinner-dark" /> : '🔓'}
-                            Unlock
+                            {loadingState === 'unlocking' ? <span className="spinner spinner-dark" /> : 'Unlock'}
                         </button>
                     )}
                 </div>
@@ -203,7 +202,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                         disabled={busy || !isLoaded || isLocked}
                         title="Lock object for exclusive editing"
                     >
-                        {loadingState === 'locking' ? <><span className="spinner" /> Locking…</> : <>🔒 Lock</>}
+                        {loadingState === 'locking' ? <><span className="spinner" /> Locking…</> : 'Lock'}
                     </button>
 
                     <button
@@ -213,7 +212,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                         disabled={busy || !isLocked}
                         title="Save source to on-prem system"
                     >
-                        {loadingState === 'saving' ? <><span className="spinner" /> Saving…</> : <>💾 Save Source</>}
+                        {loadingState === 'saving' ? <><span className="spinner" /> Saving…</> : 'Save Source'}
                     </button>
 
                     <button
@@ -223,7 +222,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                         disabled={busy || !isLocked}
                         title="Release lock"
                     >
-                        {loadingState === 'unlocking' ? <><span className="spinner spinner-dark" /> Unlocking…</> : <>🔓 Unlock</>}
+                        {loadingState === 'unlocking' ? <><span className="spinner spinner-dark" /> Unlocking…</> : 'Unlock'}
                     </button>
 
                     <button
@@ -233,7 +232,7 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                         disabled={busy || !isLoaded}
                         title="Activate object in ABAP system"
                     >
-                        {loadingState === 'activating' ? <><span className="spinner" /> Activating…</> : <>⚡ Activate</>}
+                        {loadingState === 'activating' ? <><span className="spinner" /> Activating…</> : 'Activate'}
                     </button>
                 </div>
 

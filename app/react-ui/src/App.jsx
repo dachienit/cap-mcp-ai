@@ -6,9 +6,9 @@ import CreatePanel from './components/CreatePanel.jsx';
 import EditorPanel from './components/EditorPanel.jsx';
 
 const TABS = [
-  { id: 'search', icon: '🔍', label: 'Search' },
-  { id: 'create', icon: '✨', label: 'Create Object' },
-  { id: 'editor', icon: '💻', label: 'Editor' },
+  { id: 'search', icon: '🔍', label: 'Search Objects' },
+  { id: 'create', icon: '＋', label: 'Create Object' },
+  { id: 'editor', icon: '</>', label: 'Source Editor' },
 ];
 
 // ─── Toast Manager ────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ function useToasts() {
   return { toasts, addToast };
 }
 
-const TOAST_ICONS = { success: '✅', error: '❌', info: 'ℹ️', warning: '⚠️' };
+const TOAST_ICONS = { success: '✔', error: '✖', info: 'ℹ', warning: '⚠' };
 
 function ToastArea({ toasts }) {
   return (
@@ -74,10 +74,10 @@ export default function App() {
         {/* ─── Header ─────────────────────────────── */}
         <header className="app-header">
           <div className="header-brand">
-            <div className="brand-icon">🛰️</div>
+            <div className="brand-icon">S</div>
             <div>
               <div className="brand-title">MCP ADT Manager</div>
-              <div className="brand-sub">SAP ABAP Development via BTP</div>
+              <div className="brand-sub">SAP ABAP Development Tools</div>
             </div>
           </div>
 
@@ -165,8 +165,8 @@ export default function App() {
         </main>
 
         {/* ─── Footer ─────────────────────────────── */}
-        <footer style={{ textAlign: 'center', padding: 'var(--space-5)', color: 'var(--text-tertiary)', fontSize: 12 }}>
-          MCP ADT Manager · SAP BTP ↔ On-Premise · {process.env.NODE_ENV === 'production' ? '🌐 Production' : '🧪 Local Dev (Mock Data)'}
+        <footer>
+          MCP ADT Manager &nbsp;·&nbsp; SAP BTP ↔ On-Premise ABAP &nbsp;·&nbsp; {process.env.NODE_ENV === 'production' ? '🌐 Production' : '🧪 Development'}
         </footer>
       </div>
     </>
