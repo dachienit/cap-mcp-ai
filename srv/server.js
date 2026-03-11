@@ -448,7 +448,23 @@ cds.on('bootstrap', (app) => {
                     console.warn('[adt/lock] Could not parse lockHandle from xml:', xml.substring(0, 200));
                 }
             }
-            res.json({ success: true, lockHandle, sessionCookie: csrf.cookie, csrfToken: csrf.token });
+
+            // ── CRITICAL: extract session cookie from LOCK RESPONSE (not CSRF fetch) ──
+            // The ADT lock is tied to the ABAP HTTP session that processed the lock request.
+            // BTP Cloud Connector may create a new ABAP session when proxying the lock call,
+            // so the response Set-Cookie is the actual session holding the lock.
+            // If we pass the CSRF-fetch cookie to set-source, ABAP sees a different session
+            // and rejects the lock handle with 423 "invalid lock handle".
+            const lockRespSetCookie = response.headers['set-cookie'];
+            let lockSessionCookie = '';
+            if (Array.isArray(lockRespSetCookie)) {
+                lockSessionCookie = lockRespSetCookie.map(c => c.split(';')[0]).join('; ');
+            } else if (lockRespSetCookie) {
+                lockSessionCookie = lockRespSetCookie.split(';')[0];
+            }
+            const sessionCookie = lockSessionCookie || csrf.cookie;
+            console.log(`[adt/lock] lockHandle=${lockHandle}, lock_resp_cookie_len=${lockSessionCookie.length}, using_csrf_cookie=${!lockSessionCookie}`);
+            res.json({ success: true, lockHandle, sessionCookie, csrfToken: csrf.token });
         } catch (error) {
             return handleAdtError(res, error, 'lock');
         }
