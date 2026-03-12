@@ -22,8 +22,6 @@ cds.on('bootstrap', (app) => {
     // Cloud Connector must expose this path: /sap/bc/adt
     const ADT_BASE = '/sap/bc/adt';
 
-    // â”€â”€â”€ Helper: get user JWT for Principal Propagation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // SAME pattern as /api/fetch-bom which works correctly on BTP:
     //   Authorization header = XSUAA JWT forwarded by approuter â†’ use this FIRST for PP
     //   authInfo.getToken() = fallback only
     function getUserJwt(req) {
@@ -37,7 +35,6 @@ cds.on('bootstrap', (app) => {
         return jwtFromHeader || jwtFromAuthInfo || null;
     }
 
-    // â”€â”€â”€ Helper: call on-prem via SAP Cloud SDK (same as fetch-bom) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     async function callAdt(destinationName, jwt, options) {
         const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
         try {
@@ -57,7 +54,6 @@ cds.on('bootstrap', (app) => {
         }
     }
 
-    // â”€â”€â”€ Helper: standardized error response with downstream status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     function handleAdtError(res, err, endpoint) {
         const status = err.downstreamStatus || 500;
         console.error(`[adt/${endpoint}] Error (HTTP ${status}):`, err.message);
@@ -71,9 +67,6 @@ cds.on('bootstrap', (app) => {
         });
     }
 
-    // â”€â”€â”€ Helper: fetch ADT CSRF token from on-prem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // SAP validates CSRF token against the HTTP session (cookie).
-    // We must return both the token AND the session cookie so subsequent
     // write requests can send the same cookie, letting SAP match the session.
     async function fetchAdtCsrfToken(destinationName, jwt) {
         const resp = await callAdt(destinationName, jwt, {
@@ -101,9 +94,6 @@ cds.on('bootstrap', (app) => {
         return h;
     }
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/me
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.get('/api/me', (req, res) => {
         if (req.authInfo) {
             res.json({
@@ -124,9 +114,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/fetch-bom  (legacy)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/fetch-bom', async (req, res) => {
         try {
             const destinationName = req.body?.destinationName || 'T4X_011';
@@ -154,12 +141,7 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/search  â€” Search ABAP repository objects
-    // ADT API: GET /sap/adt/repository/informationsystem/search
-    //   ?operation=quickSearch&query=<term>&maxResults=50&objectType=<type>
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    app.post('/api/adt/search', async (req, res) => {
+   app.post('/api/adt/search', async (req, res) => {
         try {
             const { destinationName, query, objectType = '', maxResults = 50 } = req.body;
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
@@ -228,9 +210,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/search-package  â€” Search ABAP packages (DEVC)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/search-package', async (req, res) => {
         try {
             const { destinationName, query, maxResults = 50 } = req.body;
@@ -274,9 +253,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/create-object  â€” Create a new ABAP object
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/create-object', async (req, res) => {
         try {
             const {
@@ -394,11 +370,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/lock  â€” Lock an ABAP object for editing
-    // ADT: POST objectUrl?_action=LOCK&accessMode=MODIFY
-    // Returns: XML with LOCK_HANDLE
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/lock', async (req, res) => {
         try {
             const { destinationName, objectUrl, accessMode = 'MODIFY' } = req.body;
@@ -470,13 +441,7 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/set-source  â€” Upload source code to a locked object
-    // ADT: PUT sourceUrl?lockHandle=<handle>
-    // NOTE: sourceUrl must be the actual source URL (from get-source response),
-    //       not just objectUrl/source/main â€” classes have different include URLs
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    app.post('/api/adt/set-source', async (req, res) => {
+   app.post('/api/adt/set-source', async (req, res) => {
         try {
             const {
                 destinationName, objectUrl, sourceUrl, lockHandle,
@@ -543,9 +508,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/unlock  â€” Unlock an ABAP object after editing
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/unlock', async (req, res) => {
         try {
             const { destinationName, objectUrl, lockHandle, sessionCookie, lockCsrfToken } = req.body;
@@ -577,12 +539,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/activate  â€” Activate ABAP objects
-    // ADT: POST /sap/bc/adt/activation/activate_multiple  (multiple objects)
-    //      POST /sap/bc/adt/activation/activate?method=activate&preauditRequested=false
-    //           with XML body containing object references
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/activate', async (req, res) => {
         try {
             const { destinationName, objects } = req.body;
@@ -712,13 +668,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // /api/adt/get-source  â€” Get source code of an existing object
-    // ADT: GET objectUrl/source/main  (text/plain ABAP source)
-    // NOTE: The objectStructure approach (finding source link from XML) was removed
-    //       because it was picking up wrong links (textelements) for ABAP classes.
-    //       Direct /source/main works for: PROG, CLAS main, INTF, FUNC
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     app.post('/api/adt/get-source', async (req, res) => {
         try {
             const { destinationName, objectUrl } = req.body;
@@ -755,19 +704,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // /api/adt/save-source  — Combined lock + set-source + unlock via adtSession.js
-    //
-    // ROOT CAUSE of 423 errors on BTP:
-    //   callAdt() uses Cloud SDK executeHttpRequest → Cloud Connector connection pool
-    //   may route lock and set-source calls to DIFFERENT TCP connections → different
-    //   ABAP ICM sessions → lock is tied to session S1 but set-source arrives on S2
-    //   → ABAP rejects with 423 "invalid lock handle".
-    //
-    // FIX: Use adtSaveSource() from adtSession.js which creates ONE axios instance
-    //      with keepAlive. All 4 sub-requests (CSRF→lock→set-source→unlock) share
-    //      the same TCP connection and ABAP session → lock always remains valid.
-    // ══════════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/save-source', async (req, res) => {
         const { objectUrl, sourceUrl: reqSourceUrl, source, transport, destinationName } = req.body;
         if (!objectUrl) return res.status(400).json({ error: 'Missing objectUrl' });
