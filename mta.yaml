@@ -32,7 +32,7 @@ modules:
       AI_GRANT_TYPE: "client_credentials"
       AI_DIA_HISTORY: "https://ews-emea.api.bosch.com/it/application/dia-brain/v1/api/chat-histories"
       AI_DIA_CHAT_RAG: "https://ews-emea.api.bosch.com/it/application/dia-brain/v1/api/chat/retrieval-augmented"
-      AI_BRAIN_ID: "e39Lh3w2teng"
+      AI_BRAIN_ID: "H0cG6uvPJ38Y"
     requires:
       - name: cap-mcp-ai-auth
       - name: cap-mcp-ai-destination

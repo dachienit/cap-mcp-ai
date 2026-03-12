@@ -80,7 +80,7 @@ async function callLLM(systemMessage, userMessage, token, historyId) {
 
     const body = {
         prompt:                userMessage,
-        customMessageBehaviour: systemMessage,
+        //customMessageBehaviour: systemMessage,
         knowledgeBaseId:       brainId,
         chatHistoryId:         historyId,
         useGptKnowledge:       true
@@ -109,13 +109,15 @@ async function callLLM(systemMessage, userMessage, token, historyId) {
 
 // ─── System Prompt Loader ─────────────────────────────────────────────────────
 async function loadSystemPrompt(destinationName) {
-    // Pattern from OctoAgent ask.js lines 175-179:
+/*     // Pattern from OctoAgent ask.js lines 175-179:
     // Read markdown file → replace ${variables} → pass as customMessageBehaviour
     const filePath = path.join(__dirname, '..', 'docs', 'system_prompt.md');
 
     let systemMessage = await fs.readFile(filePath, 'utf8');
     systemMessage = systemMessage.replace(/\$\{destinationName\}/g, destinationName || 'T4X_011');
 
+    return systemMessage; */
+    const systemMessage = "";
     return systemMessage;
 }
 

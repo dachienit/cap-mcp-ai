@@ -159,9 +159,9 @@ export default function AiPanel({ destinationName }) {
                         </div>
                         <div className="ai-suggestions">
                             {[
-                                'Find all classes starting with ZCL_IYH',
-                                'Read source code of ZCL_IYH1HC_MCP',
-                                'Create class ZCL_TEST in package ZPK_IYH1HC_MCP',
+                                'Find all classes starting with ZCL_',
+                                'Read source code of ZCL_',
+                                'Create class ZCL_TEST in package ZPK_',
                             ].map(s => (
                                 <button key={s} className="ai-suggestion-chip"
                                     onClick={() => { setInput(s); inputRef.current?.focus(); }}>
