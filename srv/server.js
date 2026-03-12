@@ -369,7 +369,39 @@ cds.on('bootstrap', (app) => {
             const cleanDesc = (description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
             const cleanResp = (responsible || logonName || 'DEVELOPER').toUpperCase();
 
-            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp, parentPath || '');
+            // Fetch actual parentPath via ADT search if missing
+            let actualParentPath = parentPath;
+            if (!actualParentPath && cleanPkg && process.env.NODE_ENV === 'production') {
+                try {
+                    const searchUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(cleanPkg)}&maxResults=10&objectType=DEVC%2FK`;
+                    const searchResp = await callAdt(destinationName, jwt, {
+                        method: 'GET',
+                        url: searchUrl,
+                        headers: { 'Accept': 'application/xml' }
+                    });
+                    const xml = typeof searchResp.data === 'string' ? searchResp.data : JSON.stringify(searchResp.data);
+                    
+                    const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
+                    const namePattern = /adtcore:name="([^"]+)"/i;
+                    const uriPattern = /adtcore:uri="([^"]*)"/i;
+                    let match;
+                    while ((match = refPattern.exec(xml)) !== null) {
+                        const tag = match[0];
+                        const mName = (namePattern.exec(tag) || [])[1];
+                        if (mName && mName.toUpperCase() === cleanPkg) {
+                            actualParentPath = (uriPattern.exec(tag) || [])[1];
+                            break;
+                        }
+                    }
+                    if (actualParentPath) {
+                        console.log(`[adt/create-object] resolved parentPath for ${cleanPkg}: ${actualParentPath}`);
+                    }
+                } catch (e) {
+                    console.warn(`[adt/create-object] Failed to resolve parentPath for ${cleanPkg}:`, e.message);
+                }
+            }
+
+            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp, actualParentPath || '');
             console.log(`[adt/create-object] xmlBody: ${xmlBody}`);
 
             // Append transport number if provided
