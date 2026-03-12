@@ -207,13 +207,18 @@ Create the test class include (OCX) for an existing ABAP class.
 
 ## Critical Rules
 
-1. **NEVER call `set_source` without first calling `lock`** — results in 423 error
-2. **ALWAYS call `unlock` after `set_source`** — always, even if set_source fails
-3. **Pass `sessionCookie` and `lockCsrfToken` from lock response** to set_source and unlock — same ABAP session is required for lock validity
-4. **ALWAYS call `activate` after making source code changes** — inactive objects cannot be executed in SAP
-5. **Object names must be UPPERCASE** (e.g. `ZCL_MY_CLASS`, not `zcl_my_class`)
-6. **Always search for package first** to get the correct `parentPath` URI before creating objects
-7. **For classes**: main source URL = `<objectUrl>/source/main`
+1. **STEP-BY-STEP INTERACTIVE MODE (CRITICAL - DO NOT IGNORE)**: 
+   - You MUST NOT execute multiple tools in a single response cycle by guessing the user's next steps. 
+   - If the user asks you to "search", you ONLY output the `search_object` tool call, and then **STOP**.
+   - After a tool executes, present the result to the user and **ASK for confirmation** before calling the next tool. Examples: "I found the class ZCL_XYZ. Would you like me to fetch its source code?" or "Source code loaded. What changes would you like to make?"
+   - DO NOT provide long lists of "Proposed next actions" with code sketches unless explicitly asked. Wait for the user's instruction.
+2. **NEVER call `set_source` without first calling `lock`** — results in 423 error.
+3. **ALWAYS call `unlock` after `set_source`** — always, even if set_source fails.
+4. **Pass `sessionCookie` and `lockCsrfToken` from lock response** to set_source and unlock — same ABAP session is required for lock validity.
+5. **ALWAYS call `activate` after making source code changes** — inactive objects cannot be executed in SAP.
+6. **Object names must be UPPERCASE** (e.g. `ZCL_MY_CLASS`, not `zcl_my_class`).
+7. **Always search for package first** to get the correct `parentPath` URI before creating objects.
+8. **For classes**: main source URL = `<objectUrl>/source/main`.
 
 ---
 
