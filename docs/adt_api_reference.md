@@ -38,11 +38,11 @@ Search ABAP repository objects by name pattern.
   "success": true,
   "data": [
     {
-      "name": "ZCL_IYH1HC_MCP",
+      "name": "ZCL_MCP",
       "type": "CLAS/OC",
       "description": "MCP test class",
-      "packageName": "ZPK_IYH1HC_MCP",
-      "url": "/sap/bc/adt/oo/classes/zcl_iyh1hc_mcp"
+      "packageName": "ZPK_PACKAGE_MCP",
+      "url": "/sap/bc/adt/oo/classes/zcl_package_mcp"
     }
   ]
 }
@@ -69,10 +69,10 @@ Search ABAP packages (DEVC) by name pattern.
   "success": true,
   "data": [
     {
-      "name": "ZPK_IYH1HC_MCP",
+      "name": "ZPK_PACKAGE_MCP",
       "description": "MCP test package",
       "superPackage": "ZLOCAL",
-      "url": "/sap/bc/adt/packages/zpk_iyh1hc_mcp"
+      "url": "/sap/bc/adt/packages/zpk_package_mcp"
     }
   ]
 }
@@ -88,7 +88,7 @@ Retrieve the ABAP source code of an existing object.
 ```json
 {
   "destinationName": "T4X_011",
-  "objectUrl": "/sap/bc/adt/oo/classes/zcl_iyh1hc_mcp"
+  "objectUrl": "/sap/bc/adt/oo/classes/zcl_mcp"
 }
 ```
 
@@ -96,8 +96,8 @@ Retrieve the ABAP source code of an existing object.
 ```json
 {
   "success": true,
-  "source": "CLASS zcl_iyh1hc_mcp DEFINITION PUBLIC...",
-  "sourceUrl": "/sap/bc/adt/oo/classes/zcl_iyh1hc_mcp/source/main"
+  "source": "CLASS zcl_mcp DEFINITION PUBLIC...",
+  "sourceUrl": "/sap/bc/adt/oo/classes/zcl_mcp/source/main"
 }
 ```
 
@@ -113,10 +113,10 @@ Create a new ABAP development object.
   "destinationName": "T4X_011",
   "objectType": "CLAS/OC",
   "name": "ZCL_MY_CLASS",
-  "packageName": "ZPK_IYH1HC_MCP",
+  "packageName": "ZPK_PACKAGE_MCP",
   "description": "My ABAP class",
-  "responsible": "IYH1HC",
-  "parentPath": "/sap/bc/adt/packages/zpk_iyh1hc_mcp",
+  "responsible": "USERID",
+  "parentPath": "/sap/bc/adt/packages/zpk_package_mcp",
   "transport": ""
 }
 ```
@@ -246,7 +246,7 @@ Activate one or more ABAP objects. Supports both simple and MCP_ABAP input forma
       "adtcore:uri": "/sap/bc/adt/oo/classes/zcl_my_class",
       "adtcore:type": "CLAS/OC",
       "adtcore:name": "ZCL_MY_CLASS",
-      "adtcore:parentUri": "/sap/bc/adt/packages/zpk_iyh1hc_mcp"
+      "adtcore:parentUri": "/sap/bc/adt/packages/zpk_package_mcp"
     }
   ]
 }
@@ -261,7 +261,7 @@ Activate one or more ABAP objects. Supports both simple and MCP_ABAP input forma
       "url": "/sap/bc/adt/oo/classes/zcl_my_class",
       "type": "CLAS/OC",
       "name": "ZCL_MY_CLASS",
-      "parentUri": "/sap/bc/adt/packages/zpk_iyh1hc_mcp"
+      "parentUri": "/sap/bc/adt/packages/zpk_package_mcp"
     }
   ]
 }

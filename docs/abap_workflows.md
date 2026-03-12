@@ -6,13 +6,13 @@ Step-by-step workflows for common ABAP development tasks.
 
 ## Workflow 1: Create a new ABAP Class (Full 8-Step)
 
-**Example user request:** *"Create class ZCL_PO_TEST in package ZPK_IYH1HC_MCP that prints Hello World"*
+**Example user request:** *"Create class ZCL_PO_TEST in package ZPK_PACKAGE_MCP that prints Hello World"*
 
 ### Step 1 — Find the package to get parentPath
 ```json
-{"tool_call": "search_package", "params": {"query": "ZPK_IYH1HC_MCP"}}
+{"tool_call": "search_package", "params": {"query": "ZPK_PACKAGE_MCP"}}
 ```
-Extract the `url` field from the result (e.g. `/sap/bc/adt/packages/zpk_iyh1hc_mcp`)
+Extract the `url` field from the result (e.g. `/sap/bc/adt/packages/zpk_package_mcp`)
 
 ---
 
@@ -23,9 +23,9 @@ Extract the `url` field from the result (e.g. `/sap/bc/adt/packages/zpk_iyh1hc_m
   "params": {
     "objectType": "CLAS/OC",
     "name": "ZCL_PO_TEST",
-    "packageName": "ZPK_IYH1HC_MCP",
+    "packageName": "ZPK_PACKAGE_MCP",
     "description": "PO Test class",
-    "parentPath": "/sap/bc/adt/packages/zpk_iyh1hc_mcp",
+    "parentPath": "/sap/bc/adt/packages/zpk_package_mcp",
     "transport": ""
   }
 }
@@ -92,7 +92,7 @@ Confirm the class exists and get its precise ADT URL.
       "adtcore:uri": "/sap/bc/adt/oo/classes/zcl_po_test",
       "adtcore:type": "CLAS/OC",
       "adtcore:name": "ZCL_PO_TEST",
-      "adtcore:parentUri": "/sap/bc/adt/packages/zpk_iyh1hc_mcp"
+      "adtcore:parentUri": "/sap/bc/adt/packages/zpk_package_mcp"
     }]
   }
 }
@@ -119,16 +119,16 @@ Lock the class again first (new lock = new lockHandle), then:
 
 ## Workflow 2: Read and Modify Existing Object Source Code
 
-**Example:** *"Read source of ZCL_IYH1HC_MCP and add a method that calculates the sum of two numbers"*
+**Example:** *"Read source of ZCL_MCP and add a method that calculates the sum of two numbers"*
 
 ### Step 1 — Find the object
 ```json
-{"tool_call": "search_object", "params": {"query": "ZCL_IYH1HC_MCP", "objectType": "CLAS"}}
+{"tool_call": "search_object", "params": {"query": "ZCL_MCP", "objectType": "CLAS"}}
 ```
 
 ### Step 2 — Read the current source code
 ```json
-{"tool_call": "get_source", "params": {"objectUrl": "/sap/bc/adt/oo/classes/zcl_iyh1hc_mcp"}}
+{"tool_call": "get_source", "params": {"objectUrl": "/sap/bc/adt/oo/classes/zcl_mcp"}}
 ```
 Analyze the current code and plan the modifications.
 
@@ -143,21 +143,21 @@ Follow Steps 4–7 from Workflow 1.
 
 ### Step 1 — Search
 ```json
-{"tool_call": "search_object", "params": {"query": "ZCL_IYH*", "objectType": "CLAS", "maxResults": 50}}
+{"tool_call": "search_object", "params": {"query": "ZCL_*", "objectType": "CLAS", "maxResults": 50}}
 ```
 
 ### Step 2 — Present results as a table
 ```
 | Name              | Type | Description    | Package          |
 |-------------------|------|----------------|------------------|
-| ZCL_IYH1HC_MCP   | CLAS | MCP test class  | ZPK_IYH1HC_MCP  |
+| ZCL_MCP   | CLAS | MCP test class  | ZPK_PACKAGE_MCP  |
 ```
 
 ---
 
 ## Workflow 4: Create an ABAP Program (Report)
 
-**Example:** *"Create report Z_HELLO_WORLD in package ZPK_IYH1HC"*
+**Example:** *"Create report Z_HELLO_WORLD in package ZPK_PACKAGE"*
 
 - `objectType`: `PROG`
 - ADT URI prefix: `/sap/bc/adt/programs/programs/`
@@ -168,9 +168,9 @@ Follow Steps 4–7 from Workflow 1.
   "params": {
     "objectType": "PROG",
     "name": "Z_HELLO_WORLD",
-    "packageName": "ZPK_IYH1HC",
+    "packageName": "ZPK_PACKAGE",
     "description": "Hello World report",
-    "parentPath": "/sap/bc/adt/packages/zpk_iyh1hc"
+    "parentPath": "/sap/bc/adt/packages/zpk_package"
   }
 }
 ```
