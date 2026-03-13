@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { createObject, searchObject } from '../api.js';
+import { useState, useEffect } from 'react';
+import { createObject, searchObject, getTransports } from '../api.js';
 
 const OBJECT_TYPES = [
     { value: 'PROG', label: 'Program (PROG)', template: `REPORT <name>.\n\nSTART-OF-SELECTION.\n  WRITE: / 'Hello World'.` },
@@ -8,20 +8,56 @@ const OBJECT_TYPES = [
     { value: 'FUGR', label: 'Function Group (FUGR)', template: `FUNCTION-POOL <name>.` },
 ];
 
-export default function CreatePanel({ destinationName, addToast }) {
+export default function CreatePanel({ destinationName, userInfo, addToast }) {
+    const defaultResponsible = userInfo?.userId || 'DEVELOPER';
+
     const [form, setForm] = useState({
         objectType: 'PROG',
         name: '',
         packageName: '$TMP',
         description: '',
-        responsible: 'DEVELOPER'
+        responsible: defaultResponsible,
+        transport: ''
     });
     const [loading, setLoading] = useState(false);
+    const [loadingTransport, setLoadingTransport] = useState(false);
     const [result, setResult] = useState(null);
+
+    // Keep responsible in sync if userInfo loads later
+    useEffect(() => {
+        if (userInfo?.userId) {
+            setForm(prev => ({ ...prev, responsible: userInfo.userId }));
+        }
+    }, [userInfo]);
 
     const selectedTypeDef = OBJECT_TYPES.find(t => t.value === form.objectType) || OBJECT_TYPES[0];
 
     const update = (field, value) => setForm(prev => ({ ...prev, [field]: value }));
+
+    const handlePackageBlur = async () => {
+        const pkg = form.packageName.trim().toUpperCase();
+        if (!pkg || pkg === '$TMP') {
+            update('transport', '');
+            return;
+        }
+
+        setLoadingTransport(true);
+        try {
+            const res = await getTransports(destinationName, pkg);
+            if (res.data && res.data.length > 0) {
+                // Pre-fill the first open transport
+                update('transport', res.data[0].number);
+                addToast(`Found active transport ${res.data[0].number} for package ${pkg}`, 'info');
+            } else {
+                update('transport', '');
+                addToast(`No active transport found for package ${pkg}`, 'warning');
+            }
+        } catch (e) {
+            addToast(`Failed to fetch transports: ${e.message}`, 'error');
+        } finally {
+            setLoadingTransport(false);
+        }
+    };
 
     const handleCreate = async () => {
         if (!form.name.trim()) { addToast('Object name is required', 'warning'); return; }
@@ -62,7 +98,7 @@ export default function CreatePanel({ destinationName, addToast }) {
     };
 
     const handleReset = () => {
-        setForm({ objectType: 'PROG', name: '', packageName: '$TMP', description: '', responsible: 'DEVELOPER' });
+        setForm({ objectType: 'PROG', name: '', packageName: '$TMP', description: '', responsible: defaultResponsible, transport: '' });
         setResult(null);
     };
 
@@ -88,8 +124,8 @@ export default function CreatePanel({ destinationName, addToast }) {
                     ))}
                 </div>
 
-                <div className="section-grid">
-                    <div className="form-group">
+                <div className="section-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                    <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                         <label className="form-label">Object Name *</label>
                         <input
                             id="create-obj-name"
@@ -107,9 +143,22 @@ export default function CreatePanel({ destinationName, addToast }) {
                             placeholder="e.g. ZLOCAL or $TMP"
                             value={form.packageName}
                             onChange={e => update('packageName', e.target.value.toUpperCase())}
+                            onBlur={handlePackageBlur}
                         />
                     </div>
-                    <div className="form-group">
+                    <div className="form-group" style={{ position: 'relative' }}>
+                        <label className="form-label">Transport Request</label>
+                        <input
+                            id="create-obj-transport"
+                            className="form-input"
+                            placeholder="Auto-filled if not $TMP"
+                            value={form.transport}
+                            onChange={e => update('transport', e.target.value.toUpperCase())}
+                            disabled={loadingTransport}
+                        />
+                        {loadingTransport && <div className="spinner spinner-dark" style={{ position: 'absolute', right: 12, top: 32 }} />}
+                    </div>
+                    <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                         <label className="form-label">Description</label>
                         <input
                             id="create-obj-desc"
@@ -119,14 +168,15 @@ export default function CreatePanel({ destinationName, addToast }) {
                             onChange={e => update('description', e.target.value)}
                         />
                     </div>
-                    <div className="form-group">
+                    <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                         <label className="form-label">Responsible Developer</label>
                         <input
                             id="create-obj-responsible"
                             className="form-input"
-                            placeholder="SAP user ID"
                             value={form.responsible}
-                            onChange={e => update('responsible', e.target.value.toUpperCase())}
+                            readOnly
+                            disabled
+                            title="Derived from your logged-in user"
                         />
                     </div>
                 </div>

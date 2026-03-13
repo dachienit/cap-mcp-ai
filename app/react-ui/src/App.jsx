@@ -154,6 +154,7 @@ export default function App() {
           {activeTab === 'create' && (
             <CreatePanel
               destinationName={destinationName}
+              userInfo={userInfo}
               addToast={addToast}
             />
           )}

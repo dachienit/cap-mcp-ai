@@ -55,6 +55,13 @@ export async function searchPackage(destinationName, query, maxResults = 50) {
 }
 
 /**
+ * Get active transports for a package
+ */
+export async function getTransports(destinationName, packageName) {
+    return post('/api/adt/transports', { destinationName, packageName });
+}
+
+/**
  * Get source code of an existing object
  */
 export async function getObjectSource(destinationName, objectUrl) {

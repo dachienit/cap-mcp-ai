@@ -253,6 +253,64 @@ cds.on('bootstrap', (app) => {
         }
     });
 
+    app.post('/api/adt/transports', async (req, res) => {
+        try {
+            const { destinationName, packageName } = req.body;
+            if (!destinationName || !packageName) return res.status(400).json({ error: 'Missing destinationName or packageName' });
+
+            if (process.env.NODE_ENV !== 'production') {
+                return res.json({
+                    success: true,
+                    data: [
+                        { number: `T4XK903271`, status: 'D', description: 'Mock Transport 1', owner: 'MOCKUSER' }
+                    ]
+                });
+            }
+
+            const jwt = getUserJwt(req);
+            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/transports] user=${logonName}, dest=${destinationName}, package=${packageName}`);
+
+            // The ADT URI for packages is typically /sap/bc/adt/packages/<packageName>
+            const packageUri = `/sap/bc/adt/packages/${encodeURIComponent(packageName.toLowerCase())}`;
+            const url = `${ADT_BASE}/repository/informationsystem/objectproperties/transports?uri=${encodeURIComponent(packageUri)}`;
+            
+            const response = await callAdt(destinationName, jwt, {
+                method: 'GET',
+                url,
+                headers: { 'Accept': 'application/xml' }
+            });
+
+            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+            const transports = [];
+            
+            // Example XML element:
+            // <tpr:transport number="T4XK903271" description="IYH1HC packages" owner="IYH1HC" status="D" ... />
+            const refPattern = /<(?:tpr:transport)[^>]*?>/gm;
+            const numPattern = /number="([^"]+)"/;
+            const statusPattern = /status="([^"]+)"/;
+            const descPattern = /description="([^"]*)"/;
+            const ownerPattern = /owner="([^"]*)"/;
+
+            let match;
+            while ((match = refPattern.exec(xml)) !== null) {
+                const tag = match[0];
+                const status = (statusPattern.exec(tag) || [])[1];
+                if (status === 'D') {
+                    transports.push({
+                        number: (numPattern.exec(tag) || [])[1],
+                        status,
+                        description: (descPattern.exec(tag) || [])[1] || '',
+                        owner: (ownerPattern.exec(tag) || [])[1] || ''
+                    });
+                }
+            }
+            res.json({ success: true, data: transports });
+        } catch (error) {
+            return handleAdtError(res, error, 'transports');
+        }
+    });
+
     app.post('/api/adt/create-object', async (req, res) => {
         try {
             const {
