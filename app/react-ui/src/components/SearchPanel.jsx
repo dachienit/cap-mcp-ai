@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { searchObject, searchPackage } from '../api.js';
+import { searchObject, searchPackage, getObjectSource } from '../api.js';
 
 const OBJECT_TYPES = [
     { value: '', label: 'All Types' },
@@ -31,6 +31,10 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     const [pkgLoading, setPkgLoading] = useState(false);
     const [selectedPkgObj, setSelectedPkgObj] = useState(null);
 
+    // ── Source Hover state
+    const [hoverSource, setHoverSource] = useState({ show: false, url: null, code: '', loading: false, x: 0, y: 0 });
+    const [hoverTimeout, setHoverTimeout] = useState(null);
+
     // ── Search Objects
     const handleSearchObj = async () => {
         if (!objQuery.trim()) { addToast('Please enter a search term', 'warning'); return; }
@@ -61,6 +65,24 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
 
     const handleKeyDown = (e, fn) => { if (e.key === 'Enter') fn(); };
 
+    // ── Hover Source
+    const handleMouseEnterSource = async (e, objUrl) => {
+        if (!objUrl) return;
+        const rect = e.target.getBoundingClientRect();
+        // position popup nicely to the left of the button
+        setHoverSource({ show: true, url: objUrl, code: '', loading: true, x: rect.left - 420 /* approx pop width */, y: rect.bottom });
+        try {
+            const result = await getObjectSource(destinationName, objUrl);
+            setHoverSource(prev => ({ ...prev, code: result.data || 'No source code available.', loading: false }));
+        } catch (err) {
+            setHoverSource(prev => ({ ...prev, code: `Error loading source: ${err.message}`, loading: false }));
+        }
+    };
+
+    const handleMouseLeaveSource = () => {
+        setHoverSource({ show: false, url: null, code: '', loading: false, x: 0, y: 0 });
+    };
+
     // ── Filter Data
     const filterData = (data, filterText) => {
         if (!data) return null;
@@ -74,10 +96,37 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     };
 
     const filteredObjResults = filterData(objResults, objFilterText);
-    const filteredPkgResults = filterData(pkgResults, pkgFilterText);
+    const filteredPkgResults = filterData(pkgResults, pkgFilterText)?.sort((a, b) => {
+        const tA = (a.type || 'DEVC').toUpperCase();
+        const tB = (b.type || 'DEVC').toUpperCase();
+        if (tA < tB) return -1;
+        if (tA > tB) return 1;
+        return (a.name || '').localeCompare(b.name || '');
+    });
 
     return (
-        <div className="panel">
+        <div className="panel" style={{ position: 'relative' }}>
+            {/* ── Hover Source Popup ── */}
+            {hoverSource.show && (
+                <div 
+                    className="source-popup card shadow-md"
+                    style={{ position: 'fixed', left: hoverSource.x, top: hoverSource.y, zIndex: 9999, width: '400px', maxHeight: '300px', display: 'flex', flexDirection: 'column' }}
+                >
+                    <div className="card-title" style={{ padding: '8px 12px', fontSize: '12px' }}>
+                        Source Preview
+                    </div>
+                    <div style={{ padding: '8px', overflowY: 'auto', flex: 1, backgroundColor: '#1c2333', margin: 0 }}>
+                        {hoverSource.loading ? (
+                            <div style={{ color: '#8a9bb0', fontSize: '12px', padding: '8px' }}>Loading source...</div>
+                        ) : (
+                            <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: '#b0bec5', whiteSpace: 'pre-wrap' }}>
+                                {hoverSource.code}
+                            </pre>
+                        )}
+                    </div>
+                </div>
+            )}
+
             {/* ── Object Search ─────────────────────────────── */}
             <div className="card">
                 <div className="card-title">
@@ -175,7 +224,16 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                                     className={`list-card ${selectedObj === obj ? 'selected' : ''}`}
                                     onClick={() => setSelectedObj(obj === selectedObj ? null : obj)}
                                 >
-                                    <div className={`list-card-badge ${obj.type}`}>{obj.type}</div>
+                                    <div className="list-card-badge-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div className={`list-card-badge ${obj.type}`}>{obj.type}</div>
+                                        {obj.url && obj.type !== 'DEVC' && (
+                                            <div 
+                                                className="source-preview-btn"
+                                                onMouseEnter={(e) => handleMouseEnterSource(e, obj.url)}
+                                                onMouseLeave={handleMouseLeaveSource}
+                                            >Source</div>
+                                        )}
+                                    </div>
                                     <div className="list-card-title">{obj.name}</div>
                                     <div className="list-card-meta">
                                         <div className="meta-col">
@@ -291,7 +349,17 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                                         style={{ cursor: isSelectable ? 'pointer' : 'default' }}
                                         title={!isSelectable ? 'Packages cannot be opened in editor' : ''}
                                     >
-                                        <div className={`list-card-badge ${pkg.type || 'DEVC'}`}>{pkg.type || 'DEVC'}</div>
+                                        <div className="list-card-badge-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <div className={`list-card-badge ${pkg.type || 'DEVC'}`}>{pkg.type || 'DEVC'}</div>
+                                            {pkg.url && pkg.type !== 'DEVC' && (
+                                                <div 
+                                                    className="source-preview-btn"
+                                                    onMouseEnter={(e) => handleMouseEnterSource(e, pkg.url)}
+                                                    onMouseLeave={handleMouseLeaveSource}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                >Source</div>
+                                            )}
+                                        </div>
                                         <div className="list-card-title">{pkg.name}</div>
                                         <div className="list-card-meta">
                                             <div className="meta-col">

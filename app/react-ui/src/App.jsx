@@ -144,32 +144,33 @@ export default function App() {
 
         {/* ─── Tab Panels ─────────────────────────── */}
         <main role="tabpanel">
-          {activeTab === 'search' && (
+          <div style={{ display: activeTab === 'search' ? 'block' : 'none' }}>
             <SearchPanel
               destinationName={destinationName}
               onSelectObject={handleSelectFromSearch}
               addToast={addToast}
             />
-          )}
-          {activeTab === 'create' && (
+          </div>
+          <div style={{ display: activeTab === 'create' ? 'block' : 'none' }}>
             <CreatePanel
               destinationName={destinationName}
               userInfo={userInfo}
               addToast={addToast}
             />
-          )}
-          {activeTab === 'editor' && (
+          </div>
+          <div style={{ display: activeTab === 'editor' ? 'block' : 'none' }}>
+            {/* Delay rendering EditorPanel heavily if not active but usually okay to mount */}
             <EditorPanel
               destinationName={destinationName}
               initialObject={selectedObject}
               addToast={addToast}
             />
-          )}
-          {activeTab === 'ai' && (
+          </div>
+          <div style={{ display: activeTab === 'ai' ? 'block' : 'none' }}>
             <AiPanel
               destinationName={destinationName}
             />
-          )}
+          </div>
         </main>
 
         {/* ─── Footer ─────────────────────────────── */}
