@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { createObject } from '../api.js';
+import { createObject, searchObject } from '../api.js';
 
 const OBJECT_TYPES = [
-    { value: 'PROG', label: 'Program (PROG)', template: `REPORT z_<name>.\n\nSTART-OF-SELECTION.\n  WRITE: / 'Hello World'.` },
-    { value: 'CLAS', label: 'Class (CLAS)', template: `CLASS zcl_<name> DEFINITION PUBLIC FINAL CREATE PUBLIC.\n  PUBLIC SECTION.\n    METHODS: run.\nENDCLASS.\n\nCLASS zcl_<name> IMPLEMENTATION.\n  METHOD run.\n    WRITE: / 'Hello from class'.\n  ENDMETHOD.\nENDCLASS.` },
-    { value: 'INTF', label: 'Interface (INTF)', template: `INTERFACE zif_<name> PUBLIC.\n  METHODS: execute.\nENDINTERFACE.` },
-    { value: 'FUGR', label: 'Function Group (FUGR)', template: `FUNCTION-POOL z<name>.` },
+    { value: 'PROG', label: 'Program (PROG)', template: `REPORT <name>.\n\nSTART-OF-SELECTION.\n  WRITE: / 'Hello World'.` },
+    { value: 'CLAS', label: 'Class (CLAS)', template: `CLASS <name> DEFINITION PUBLIC FINAL CREATE PUBLIC.\n  PUBLIC SECTION.\n    METHODS: run.\nENDCLASS.\n\nCLASS <name> IMPLEMENTATION.\n  METHOD run.\n    WRITE: / 'Hello from class'.\n  ENDMETHOD.\nENDCLASS.` },
+    { value: 'INTF', label: 'Interface (INTF)', template: `INTERFACE <name> PUBLIC.\n  METHODS: execute.\nENDINTERFACE.` },
+    { value: 'FUGR', label: 'Function Group (FUGR)', template: `FUNCTION-POOL <name>.` },
 ];
 
 export default function CreatePanel({ destinationName, addToast }) {
@@ -29,6 +29,30 @@ export default function CreatePanel({ destinationName, addToast }) {
 
         setLoading(true); setResult(null);
         try {
+            // First, check if object already exists
+            const searchRes = await searchObject(destinationName, form.name.toUpperCase(), form.objectType, 10);
+            const existingObjects = searchRes.data || searchRes.results || [];
+            
+            // Because BTP backend uses wildcard search (query + '*'), we should check for an exact match
+            const exactMatch = existingObjects.find(obj => 
+                (obj.name || obj['adtcore:name'] || '').toUpperCase() === form.name.toUpperCase()
+            );
+
+            // If there's any result that matches exact name, return error
+            if (exactMatch || existingObjects.length > 0) {
+                // If the user wants to strictly block *any* search result, we block it here. 
+                // But specifically rejecting exact match is safest to not block unrelated objects.
+                if (exactMatch) {
+                    addToast(`Object ${form.name.toUpperCase()} already exists in the system`, 'error');
+                    setLoading(false);
+                    return;
+                } else {
+                    // Just in case existingObjects has items but none match exactly. 
+                    // Often the case if user submits "ZCL", and "ZCL_1", "ZCL_2" exist but "ZCL" doesn't.
+                    // We'll proceed in this case because the object "ZCL" itself doesn't exist yet.
+                }
+            }
+
             const res = await createObject({ ...form, destinationName, name: form.name.toUpperCase(), packageName: form.packageName.toUpperCase() });
             setResult(res);
             addToast(`Object ${form.name.toUpperCase()} created successfully!`, 'success');
@@ -148,34 +172,6 @@ export default function CreatePanel({ destinationName, addToast }) {
                 </div>
             </div>
 
-            {/* Quick Reference */}
-            <div className="card">
-                <div className="card-title">
-                    <span className="icon icon-orange">i</span>
-                    Quick Reference — Naming Conventions
-                </div>
-                <div className="table-wrapper">
-                    <table className="result-table">
-                        <thead>
-                            <tr><th>Type</th><th>Naming Pattern</th><th>Example</th></tr>
-                        </thead>
-                        <tbody>
-                            {[
-                                ['PROG', 'Z_<PREFIX>_<NAME>', 'Z_MRP_REPORT'],
-                                ['CLAS', 'ZCL_<NAME>', 'ZCL_ORDER_HANDLER'],
-                                ['INTF', 'ZIF_<NAME>', 'ZIF_PROCESSABLE'],
-                                ['FUGR', 'Z<NAME>', 'ZMRP_FUNCTIONS'],
-                            ].map(([type, pattern, ex]) => (
-                                <tr key={type}>
-                                    <td><span className={`type-badge ${type}`}>{type}</span></td>
-                                    <td><code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>{pattern}</code></td>
-                                    <td style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{ex}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         </div>
     );
 }
