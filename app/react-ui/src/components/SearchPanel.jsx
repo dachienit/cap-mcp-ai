@@ -166,41 +166,37 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                                 </button>
                             )}
                         </div>
-                        <div className="table-wrapper">
-                            <table className="result-table">
-                                <thead>
-                                    <tr>
-                                        <th>Type</th>
-                                        <th>Name</th>
-                                        <th>Description</th>
-                                        <th>Package</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {filteredObjResults.length === 0 ? (
-                                        <tr><td colSpan="4" style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)' }}>No matches for filter</td></tr>
-                                    ) : filteredObjResults.map((obj, i) => (
-                                        <tr
-                                            key={i}
-                                            className={selectedObj === obj ? 'selected' : ''}
-                                            onClick={() => setSelectedObj(obj === selectedObj ? null : obj)}
-                                        >
-                                            <td><span className={`type-badge ${obj.type}`}>{obj.type}</span></td>
-                                            <td>
-                                                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
-                                                    {obj.name}
-                                                </span>
-                                            </td>
-                                            <td style={{ color: 'var(--text-secondary)' }}>{obj.description || '—'}</td>
-                                            <td>
-                                                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: '#0077a8' }}>
-                                                    {obj.packageName || '—'}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                        <div className="list-view-container" style={{ borderTop: '1px solid var(--separator)', paddingTop: '1rem' }}>
+                            {filteredObjResults.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)' }}>No matches for filter</div>
+                            ) : filteredObjResults.map((obj, i) => (
+                                <div
+                                    key={i}
+                                    className={`list-card ${selectedObj === obj ? 'selected' : ''}`}
+                                    onClick={() => setSelectedObj(obj === selectedObj ? null : obj)}
+                                >
+                                    <div className={`list-card-badge ${obj.type}`}>{obj.type}</div>
+                                    <div className="list-card-title">{obj.name}</div>
+                                    <div className="list-card-meta">
+                                        <div className="meta-col">
+                                            <span className="meta-label">Type</span>
+                                            <span className="meta-value">{obj.type}</span>
+                                        </div>
+                                        <div className="meta-col" style={{ flex: 1, minWidth: '150px' }}>
+                                            <span className="meta-label">Description</span>
+                                            <span className="meta-value" style={{ color: 'var(--text-secondary)' }}>{obj.description || '—'}</span>
+                                        </div>
+                                        <div className="meta-col">
+                                            <span className="meta-label">System</span>
+                                            <span className="meta-value">{destinationName || '—'}</span>
+                                        </div>
+                                        <div className="meta-col">
+                                            <span className="meta-label">Package</span>
+                                            <span className="meta-value">{obj.packageName || '—'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     </>
                 )}
@@ -282,46 +278,42 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                                 </button>
                             )}
                         </div>
-                        <div className="table-wrapper">
-                            <table className="result-table">
-                                <thead>
-                                    <tr>
-                                        <th>Type</th>
-                                        <th>Name</th>
-                                        <th>Description</th>
-                                        <th>Package / Scope</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {filteredPkgResults.length === 0 ? (
-                                        <tr><td colSpan="4" style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)' }}>No matches for filter</td></tr>
-                                    ) : filteredPkgResults.map((pkg, i) => {
-                                        const isSelectable = pkg.type !== 'DEVC';
-                                        return (
-                                            <tr 
-                                                key={i}
-                                                className={selectedPkgObj === pkg ? 'selected' : ''}
-                                                onClick={() => isSelectable ? setSelectedPkgObj(pkg === selectedPkgObj ? null : pkg) : null}
-                                                style={{ cursor: isSelectable ? 'pointer' : 'default' }}
-                                                title={!isSelectable ? 'Packages cannot be opened in editor' : ''}
-                                            >
-                                                <td><span className={`type-badge ${pkg.type || 'DEVC'}`}>{pkg.type || 'DEVC'}</span></td>
-                                                <td>
-                                                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
-                                                        {pkg.name}
-                                                    </span>
-                                                </td>
-                                                <td style={{ color: 'var(--text-secondary)' }}>{pkg.description || '—'}</td>
-                                                <td>
-                                                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: '#0077a8' }}>
-                                                        {pkg.packageName || pkg.superPackage || '—'}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
+                        <div className="list-view-container" style={{ borderTop: '1px solid var(--separator)', paddingTop: '1rem' }}>
+                            {filteredPkgResults.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)' }}>No matches for filter</div>
+                            ) : filteredPkgResults.map((pkg, i) => {
+                                const isSelectable = pkg.type !== 'DEVC';
+                                return (
+                                    <div
+                                        key={i}
+                                        className={`list-card ${selectedPkgObj === pkg ? 'selected' : ''}`}
+                                        onClick={() => isSelectable ? setSelectedPkgObj(pkg === selectedPkgObj ? null : pkg) : null}
+                                        style={{ cursor: isSelectable ? 'pointer' : 'default' }}
+                                        title={!isSelectable ? 'Packages cannot be opened in editor' : ''}
+                                    >
+                                        <div className={`list-card-badge ${pkg.type || 'DEVC'}`}>{pkg.type || 'DEVC'}</div>
+                                        <div className="list-card-title">{pkg.name}</div>
+                                        <div className="list-card-meta">
+                                            <div className="meta-col">
+                                                <span className="meta-label">Type</span>
+                                                <span className="meta-value">{pkg.type || 'DEVC'}</span>
+                                            </div>
+                                            <div className="meta-col" style={{ flex: 1, minWidth: '150px' }}>
+                                                <span className="meta-label">Description</span>
+                                                <span className="meta-value" style={{ color: 'var(--text-secondary)' }}>{pkg.description || '—'}</span>
+                                            </div>
+                                            <div className="meta-col">
+                                                <span className="meta-label">System</span>
+                                                <span className="meta-value">{destinationName || '—'}</span>
+                                            </div>
+                                            <div className="meta-col">
+                                                <span className="meta-label">Package / Scope</span>
+                                                <span className="meta-value">{pkg.packageName || pkg.superPackage || '—'}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </>
                 )}
