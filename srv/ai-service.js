@@ -1,19 +1,3 @@
-/**
- * ai-service.js — AI RAG service for MCP ADT Manager
- *
- * Follows the same pattern as OctoAgent/console/srv/src/ask.js:
- *   1. OAuth2 client_credentials token cache
- *   2. createHistory(brainId) → historyId
- *   3. callLLM(systemMessage, userMessage, brainId, token, historyId)
- *      → POST DIA_CHAT_RAG { prompt, customMessageBehaviour, knowledgeBaseId, chatHistoryId, useGptKnowledge }
- *
- * Adds agentic tool-call loop on top:
- *   AI response may contain {"tool_call": "...", "params": {...}}
- *   → Server executes the ADT tool
- *   → Feeds result back to AI
- *   → Loops until AI returns a plain text answer (max MAX_TURNS turns)
- */
-
 'use strict';
 
 const path = require('path');

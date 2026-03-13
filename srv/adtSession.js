@@ -1,26 +1,3 @@
-/**
- * adtSession.js — Stateful ADT HTTP session using axios + manual cookie jar
- *
- * ROOT CAUSE of 423 on BTP:
- *   SAP Principal Propagation treats each executeHttpRequest as a new stateless
- *   ABAP dialog step. ADT locks are tied to the session/dialog that created them.
- *   When each callAdt() = new dialog → lock is released immediately after lock POST.
- *
- * FIX:
- *   Use a single axios instance for the entire CSRF→lock→set-source→unlock sequence.
- *   Extract the session cookie from CSRF response, resend it in all subsequent calls.
- *   axios with a shared instance reuses the same underlying TCP connection pool,
- *   which keeps the ABAP ICM session alive across all 4 sub-requests.
- *
- * How CC proxy works with this approach:
- *   - getDestination() gives us the CC virtual host URL + Proxy-Authorization
- *   - We create an axios instance pointing to the CC proxy
- *   - Requests carry: Proxy-Authorization (our BTP app token to CC)
- *                     Authorization: Bearer <user JWT> (CC converts to PP cert for ABAP)
- *   - CC sees the user JWT, exchanges for a PP certificate, forwards to ABAP
- *   - Because the same axios instance reuses TCP connections, CC may reuse the same
- *     ABAP backend connection → same ABAP ICM session → lock stays alive
- */
 
 'use strict';
 
