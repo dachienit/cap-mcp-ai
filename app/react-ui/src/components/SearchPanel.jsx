@@ -73,7 +73,7 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
         setHoverSource({ show: true, url: objUrl, code: '', loading: true, x: rect.left - 420 /* approx pop width */, y: rect.bottom });
         try {
             const result = await getObjectSource(destinationName, objUrl);
-            setHoverSource(prev => ({ ...prev, code: result.data || 'No source code available.', loading: false }));
+            setHoverSource(prev => ({ ...prev, code: result.source || 'No source code available.', loading: false }));
         } catch (err) {
             setHoverSource(prev => ({ ...prev, code: `Error loading source: ${err.message}`, loading: false }));
         }
@@ -112,14 +112,14 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                     className="source-popup card shadow-md"
                     style={{ position: 'fixed', left: hoverSource.x, top: hoverSource.y, zIndex: 9999, width: '400px', maxHeight: '300px', display: 'flex', flexDirection: 'column' }}
                 >
-                    <div className="card-title" style={{ padding: '8px 12px', fontSize: '12px' }}>
+                    <div className="card-title" style={{ padding: '8px 12px', fontSize: '12px', backgroundColor: '#f5f7fb', borderBottom: '1px solid #dde3ed' }}>
                         Source Preview
                     </div>
-                    <div style={{ padding: '8px', overflowY: 'auto', flex: 1, backgroundColor: '#1c2333', margin: 0 }}>
+                    <div style={{ padding: '8px', overflowY: 'auto', flex: 1, backgroundColor: '#ffffff', margin: 0 }}>
                         {hoverSource.loading ? (
-                            <div style={{ color: '#8a9bb0', fontSize: '12px', padding: '8px' }}>Loading source...</div>
+                            <div style={{ color: 'var(--text-hint)', fontSize: '12px', padding: '8px' }}>Loading source...</div>
                         ) : (
-                            <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: '#b0bec5', whiteSpace: 'pre-wrap' }}>
+                            <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-body)', whiteSpace: 'pre-wrap' }}>
                                 {hoverSource.code}
                             </pre>
                         )}

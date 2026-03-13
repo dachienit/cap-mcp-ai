@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { getObjectSource, lockObject, setObjectSource, saveObjectSource, unlock, activateObjects } from '../api.js';
 
 export default function EditorPanel({ destinationName, initialObject, addToast }) {
@@ -19,6 +19,18 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
     const busy = !!loadingState;
     const isLocked = !!lockHandle;
     const hasChanges = isDirty && source !== originalSource;
+
+    // ── Sync with initialObject prop (when navigation from Search happens)
+    useEffect(() => {
+        if (initialObject && initialObject.url !== objectUrl) {
+            setObjectUrl(initialObject.url || '');
+            setObjectName(initialObject.name || '');
+            setObjectType(initialObject.type || 'PROG');
+            // Auto-load source when a new object is selected from search
+            setIsLoaded(false);
+            setSource('');
+        }
+    }, [initialObject]);
 
     // ── Load source code
     const handleLoad = async () => {
