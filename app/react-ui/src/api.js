@@ -4,23 +4,52 @@
  */
 
 let csrfToken = null;
+let adtSessionCookies = null;
 
 export function setCsrfToken(token) {
     csrfToken = token;
 }
 
 async function post(endpoint, body) {
+    const headers = {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken || ''
+    };
+    
+    if (adtSessionCookies) {
+        headers['x-adt-session-cookies'] = adtSessionCookies;
+    }
+
     const res = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': csrfToken || ''
-        },
+        headers,
         body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
+}
+
+/**
+ * Login to ADT (Stateful Session)
+ */
+export async function adtLogin(destinationName) {
+    const res = await post('/api/adt/login', { destinationName });
+    if (res.success && res.cookies) {
+        adtSessionCookies = res.cookies;
+    }
+    return res;
+}
+
+/**
+ * Logout from ADT
+ */
+export async function adtLogout(destinationName) {
+    try {
+        await post('/api/adt/logout', { destinationName });
+    } finally {
+        adtSessionCookies = null;
+    }
 }
 
 /**

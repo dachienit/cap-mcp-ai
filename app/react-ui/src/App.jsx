@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import './index.css';
-import { fetchUserInfo } from './api.js';
+import { fetchUserInfo, adtLogin, adtLogout } from './api.js';
 import SearchPanel from './components/SearchPanel.jsx';
 import CreatePanel from './components/CreatePanel.jsx';
 import EditorPanel from './components/EditorPanel.jsx';
@@ -45,6 +45,8 @@ function ToastArea({ toasts }) {
 export default function App() {
   const [activeTab, setActiveTab] = useState('search');
   const [destinationName, setDestinationName] = useState('T4X_011');
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [userInfo, setUserInfo] = useState(null);
   const [authStatus, setAuthStatus] = useState('loading'); // 'loading' | 'ok' | 'error'
   const { toasts, addToast } = useToasts();
@@ -62,6 +64,33 @@ export default function App() {
     setSelectedObject(obj);
     setActiveTab('editor');
     addToast(`Opening ${obj.name} in Editor`, 'info');
+  };
+
+  const handleLogin = async () => {
+    if (isLoggingIn || isLoggedIn) return;
+    setIsLoggingIn(true);
+    try {
+      const res = await adtLogin(destinationName);
+      if (res.success) {
+        setIsLoggedIn(true);
+        addToast(`Successfully logged into ${destinationName}`, 'success');
+      }
+    } catch (err) {
+      addToast(`Login failed: ${err.message}`, 'error');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await adtLogout(destinationName);
+      setIsLoggedIn(false);
+      addToast(`Logged out from ${destinationName}`, 'info');
+    } catch (err) {
+      addToast(`Logout error: ${err.message}`, 'error');
+      setIsLoggedIn(false);
+    }
   };
 
   // Initials for avatar
@@ -87,13 +116,30 @@ export default function App() {
             {/* Destination selector */}
             <div className="destination-selector">
               <label htmlFor="destination-input">Destination</label>
-              <input
-                id="destination-input"
-                className="destination-input"
-                value={destinationName}
-                onChange={e => setDestinationName(e.target.value)}
-                title="BTP Destination Name for on-premise connection"
-              />
+              <div className="destination-controls">
+                <input
+                  id="destination-input"
+                  className="destination-input"
+                  value={destinationName}
+                  onChange={e => setDestinationName(e.target.value)}
+                  disabled={isLoggedIn || isLoggingIn}
+                  title="BTP Destination Name for on-premise connection"
+                />
+                {!isLoggedIn ? (
+                  <button 
+                    className="login-btn" 
+                    onClick={handleLogin}
+                    disabled={isLoggingIn || !destinationName}
+                  >
+                    {isLoggingIn ? (
+                      <span className="spinner spinner-white" />
+                    ) : 'Connect'}
+                  </button>
+                ) : (
+                  <button className="logout-btn" onClick={handleLogout}>Disconnect</button>
+                )}
+              </div>
+              {isLoggedIn && <span className="conn-status">● Connected</span>}
             </div>
 
             {/* User badge */}

@@ -95,10 +95,10 @@ function throwAdtError(axiosResponse, step) {
  * @param {string} opts.objectUrl    - ADT object URI
  * @param {string} opts.sourceUrl    - ADT source URL (or objectUrl/source/main)
  * @param {string} opts.source       - ABAP source code to save
- * @param {string} [opts.transport]  - Transport request number (optional)
+ * @param {string} [opts.cookies]    - Existing session cookies to reuse
  * @param {Function} opts.log        - Logging function (msg => void)
  */
-async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, transport, log }) {
+async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, transport, cookies, log }) {
     log = log || console.log;
 
     const { client } = await buildAdtAxiosClient(destName, userJwt);
@@ -110,11 +110,13 @@ async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, 
     const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
         headers: {
             'X-CSRF-Token': 'Fetch',
-            'Accept':       'application/atomsvc+xml, application/xml, */*'
+            'Accept':       'application/atomsvc+xml, application/xml, */*',
+            'Cookie':       cookies || ''
         }
     });
     const csrfToken = csrfResp.headers['x-csrf-token'] || '';
-    sessionCookie   = parseCookies(csrfResp.headers['set-cookie']);
+    const newCookies = parseCookies(csrfResp.headers['set-cookie']);
+    sessionCookie   = newCookies || cookies || '';
     log(`[adtSession] step1/csrf token=${csrfToken?.substring(0, 10)}, cookie_len=${sessionCookie.length}`);
 
     if (!csrfToken) throw Object.assign(

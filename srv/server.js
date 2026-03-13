@@ -35,9 +35,13 @@ cds.on('bootstrap', (app) => {
         return jwtFromHeader || jwtFromAuthInfo || null;
     }
 
-    async function callAdt(destinationName, jwt, options) {
+    async function callAdt(destinationName, jwt, options, cookies = null) {
         const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
         try {
+            if (cookies) {
+                options.headers = options.headers || {};
+                options.headers['Cookie'] = cookies;
+            }
             return await executeHttpRequest(
                 { destinationName, jwt },
                 options
@@ -68,12 +72,12 @@ cds.on('bootstrap', (app) => {
     }
 
     // write requests can send the same cookie, letting SAP match the session.
-    async function fetchAdtCsrfToken(destinationName, jwt) {
+    async function fetchAdtCsrfToken(destinationName, jwt, cookies = null) {
         const resp = await callAdt(destinationName, jwt, {
             method: 'GET',
             url: `${ADT_BASE}/core/discovery`,
             headers: { 'X-CSRF-Token': 'Fetch', 'Accept': 'application/atomsvc+xml, application/xml, */*' }
-        });
+        }, cookies);
         const token = resp.headers['x-csrf-token'] || resp.headers['X-CSRF-Token'] || '';
         // Extract session cookie(s) â€” strip path/domain/max-age directives, keep name=value pairs
         const setCookieHeader = resp.headers['set-cookie'];
@@ -84,7 +88,8 @@ cds.on('bootstrap', (app) => {
             cookie = setCookieHeader.split(';')[0];
         }
         console.log(`[csrf] token=${token?.substring(0, 10) || '(empty)'}, cookie_length=${cookie?.length || 0}`);
-        return { token, cookie };
+        // Return BOTH the new cookie (if any) and the existing cookies to maintain session
+        return { token, cookie: cookie || cookies };
     }
 
     // Helper: build headers with CSRF token + session cookie
@@ -141,9 +146,67 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-   app.post('/api/adt/search', async (req, res) => {
+    app.post('/api/adt/login', async (req, res) => {
+        try {
+            const { destinationName } = req.body;
+            if (!destinationName) return res.status(400).json({ error: 'Missing destinationName' });
+
+            if (process.env.NODE_ENV !== 'production') {
+                return res.json({ success: true, cookies: 'sap-usercontext=sap-client=001; sap-session-id=MOCK_SESSION', discovery: { systemId: 'MOCK' } });
+            }
+
+            const jwt = getUserJwt(req);
+            // Request stateful session via compatibility graph
+            const response = await callAdt(destinationName, jwt, {
+                method: 'GET',
+                url: `${ADT_BASE}/compatibility/graph`,
+                headers: { 
+                    'Accept': 'application/xml',
+                    'X-sap-adt-session-type': 'stateful'
+                }
+            });
+
+            const setCookieHeader = response.headers['set-cookie'];
+            let cookies = '';
+            if (Array.isArray(setCookieHeader)) {
+                cookies = setCookieHeader.map(c => c.split(';')[0]).join('; ');
+            } else if (setCookieHeader) {
+                cookies = setCookieHeader.split(';')[0];
+            }
+
+            res.json({ success: true, cookies, discovery: response.data });
+        } catch (error) {
+            handleAdtError(res, error, 'login');
+        }
+    });
+
+    app.post('/api/adt/logout', async (req, res) => {
+        try {
+            const { destinationName } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
+            if (!destinationName) return res.status(400).json({ error: 'Missing destinationName' });
+
+            if (process.env.NODE_ENV !== 'production' || !cookies) {
+                return res.json({ success: true });
+            }
+
+            const jwt = getUserJwt(req);
+            // Terminate ADT session
+            await callAdt(destinationName, jwt, {
+                method: 'DELETE',
+                url: `${ADT_BASE}/sessions`
+            }, cookies);
+
+            res.json({ success: true });
+        } catch (error) {
+            res.json({ success: true });
+        }
+    });
+
+    app.post('/api/adt/search', async (req, res) => {
         try {
             const { destinationName, query, objectType = '', maxResults = 50 } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -172,7 +235,7 @@ cds.on('bootstrap', (app) => {
                     'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml',
                     'sap-client': process.env.SAP_CLIENT || ''
                 }
-            });
+            }, cookies);
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/search] response status=${response.status}, body_length=${xml.length}`);
@@ -213,6 +276,7 @@ cds.on('bootstrap', (app) => {
     app.post('/api/adt/search-package', async (req, res) => {
         try {
             const { destinationName, query, maxResults = 50 } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -239,7 +303,7 @@ cds.on('bootstrap', (app) => {
                     method: 'GET',
                     url,
                     headers: { 'Accept': 'application/xml' }
-                });
+                }, cookies);
                 
                 const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                 const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
@@ -259,7 +323,7 @@ cds.on('bootstrap', (app) => {
                     method: 'GET',
                     url: pkgUrl,
                     headers: { 'Accept': 'application/xml' }
-                });
+                }, cookies);
                 
                 let pkgXml = typeof pkgResponse.data === 'string' ? pkgResponse.data : JSON.stringify(pkgResponse.data);
                 const pkgRefPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
@@ -287,7 +351,7 @@ cds.on('bootstrap', (app) => {
                         method: 'GET',
                         url: contentsUrl,
                         headers: { 'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml' }
-                    });
+                    }, cookies);
                     
                     const xml = typeof contentsResp.data === 'string' ? contentsResp.data : JSON.stringify(contentsResp.data);
                     const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
@@ -320,6 +384,7 @@ cds.on('bootstrap', (app) => {
     app.post('/api/adt/transports', async (req, res) => {
         try {
             const { destinationName, packageName } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !packageName) return res.status(400).json({ error: 'Missing destinationName or packageName' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -343,7 +408,7 @@ cds.on('bootstrap', (app) => {
                 method: 'GET',
                 url,
                 headers: { 'Accept': 'application/vnd.sap.adt.repository.trproperties.result.v1+xml' }
-            });
+            }, cookies);
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             const transports = [];
@@ -383,6 +448,7 @@ cds.on('bootstrap', (app) => {
                 parentPath,   // URL of the parent package (e.g. /sap/bc/adt/packages/zpk_iyh1hc)
                 transport     // Transport request number (e.g. T4XK903271), auto-created if empty
             } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectType || !name || !packageName) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectType, name, packageName' });
             }
@@ -481,13 +547,13 @@ cds.on('bootstrap', (app) => {
                 : `${ADT_BASE}/${cfg.uri}`;
             console.log(`[adt/create-object] POST url: ${postUrl}`);
 
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: postUrl,
                 headers: csrfHeaders(csrf, { 'Content-Type': cfg.contentType, 'Accept': '*/*' }),
                 data: xmlBody
-            });
+            }, cookies);
 
             const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
             console.log(`[adt/create-object] created: ${objectUrl}`);
@@ -500,6 +566,7 @@ cds.on('bootstrap', (app) => {
     app.post('/api/adt/lock', async (req, res) => {
         try {
             const { destinationName, objectUrl, accessMode = 'MODIFY' } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl) return res.status(400).json({ error: 'Missing destinationName or objectUrl' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -514,13 +581,13 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/lock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
             console.log(`[adt/lock] csrf=${csrf.token?.substring(0, 10)}, sending lock to: ${objectUrl}?_action=LOCK&accessMode=${accessMode}`);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
                 headers: csrfHeaders(csrf, { 'Accept': '*/*' })
-            });
+            }, cookies);
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/lock] response xml (first 300): ${xml.substring(0, 300)}`);
@@ -575,6 +642,7 @@ cds.on('bootstrap', (app) => {
                 sessionCookie, lockCsrfToken, source,
                 transport  // optional Transport request number
             } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl || !lockHandle || source === undefined) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, lockHandle, source' });
             }
@@ -594,7 +662,7 @@ cds.on('bootstrap', (app) => {
                     const structResp = await callAdt(destinationName, jwt, {
                         method: 'GET', url: objectUrl,
                         headers: { 'Accept': 'application/xml, application/*+xml' }
-                    });
+                    }, cookies);
                     const structXml = typeof structResp.data === 'string' ? structResp.data : JSON.stringify(structResp.data);
                     const m = /href="([^"]+)"[^>]*rel="[^"]*\/source[^"]*"/.exec(structXml)
                         || /rel="[^"]*\/source[^"]*"[^>]*href="([^"]+)"/.exec(structXml);
@@ -614,7 +682,7 @@ cds.on('bootstrap', (app) => {
             let csrf = { cookie: sessionCookie, token: lockCsrfToken };
             if (!csrf.token || !csrf.cookie) {
                 // Fallback (might fail with 403 or 423 if lock requires same session)
-                csrf = await fetchAdtCsrfToken(destinationName, jwt);
+                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
 
@@ -628,7 +696,7 @@ cds.on('bootstrap', (app) => {
                 url: putUrl,
                 headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8', 'Accept': 'text/plain, */*' }),
                 data: source
-            });
+            }, cookies);
             res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'set-source');
@@ -638,6 +706,7 @@ cds.on('bootstrap', (app) => {
     app.post('/api/adt/unlock', async (req, res) => {
         try {
             const { destinationName, objectUrl, lockHandle, sessionCookie, lockCsrfToken } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl || !lockHandle) return res.status(400).json({ error: 'Missing fields' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -651,7 +720,7 @@ cds.on('bootstrap', (app) => {
 
             let csrf = { cookie: sessionCookie, token: lockCsrfToken };
             if (!csrf.token || !csrf.cookie) {
-                csrf = await fetchAdtCsrfToken(destinationName, jwt);
+                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
 
@@ -659,7 +728,7 @@ cds.on('bootstrap', (app) => {
                 method: 'DELETE',
                 url: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
                 headers: csrfHeaders(csrf)
-            });
+            }, cookies);
             res.json({ success: true, message: 'Object unlocked' });
         } catch (error) {
             return handleAdtError(res, error, 'unlock');
@@ -669,6 +738,7 @@ cds.on('bootstrap', (app) => {
     app.post('/api/adt/activate', async (req, res) => {
         try {
             const { destinationName, objects } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             // objects: Array of { name, url, type, parentUri }
             // OR MCP_ABAP format: { 'adtcore:uri', 'adtcore:type', 'adtcore:name', 'adtcore:parentUri' }
             if (!destinationName || !objects || !objects.length) {
@@ -698,7 +768,7 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/activate] user=${logonName}, dest=${destinationName}, objects=${normalized.map(o => o.name).join(',')}`);
 
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
 
             // Build objectReferences XML — include type and parentUri if present
             const objRefs = normalized.map(o => {
@@ -724,7 +794,7 @@ cds.on('bootstrap', (app) => {
                     'Accept': 'application/xml, */*'
                 }),
                 data: xmlBody
-            });
+            }, cookies);
 
             const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/activate] status=${response.status}, response=${respXml.substring(0, 300)}`);
@@ -756,6 +826,7 @@ cds.on('bootstrap', (app) => {
                 lockCsrfToken,  // from lock step
                 transport       // optional TR number
             } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !clas || !lockHandle) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, clas, lockHandle' });
             }
@@ -771,7 +842,7 @@ cds.on('bootstrap', (app) => {
 
             let csrf = { cookie: sessionCookie, token: lockCsrfToken };
             if (!csrf.token || !csrf.cookie) {
-                csrf = await fetchAdtCsrfToken(destinationName, jwt);
+                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
 
@@ -788,7 +859,7 @@ cds.on('bootstrap', (app) => {
                     'Accept': '*/*'
                 }),
                 data: ''  // empty body creates the test include
-            });
+            }, cookies);
             res.json({ success: true, message: `Test include created for class ${clas.toUpperCase()}` });
         } catch (error) {
             return handleAdtError(res, error, 'create-test-include');
@@ -798,6 +869,7 @@ cds.on('bootstrap', (app) => {
     app.post('/api/adt/get-source', async (req, res) => {
         try {
             const { destinationName, objectUrl } = req.body;
+            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl) return res.status(400).json({ error: 'Missing fields' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -824,7 +896,7 @@ cds.on('bootstrap', (app) => {
                 method: 'GET',
                 url: sourceUrl,
                 headers: { 'Accept': 'text/plain, */*' }
-            });
+            }, cookies);
             res.json({ success: true, source: response.data, sourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'get-source');
@@ -840,6 +912,7 @@ cds.on('bootstrap', (app) => {
         const jwt  = getUserJwt(req);
         const user = req.authInfo?.getLogonName?.() || 'unknown';
         const srcUrl = reqSourceUrl || `${objectUrl}/source/main`;
+        const cookies = req.headers['x-adt-session-cookies'];
         console.log(`[adt/save-source] user=${user}, dest=${dest}, url=${objectUrl}`);
 
         if (process.env.NODE_ENV !== 'production') {
@@ -855,6 +928,7 @@ cds.on('bootstrap', (app) => {
                 sourceUrl:  srcUrl,
                 source,
                 transport,
+                cookies,
                 log: (msg) => console.log(msg)
             });
             res.json({ success: true, message: 'Source saved and unlocked', sourceUrl: result.sourceUrl });
@@ -891,6 +965,7 @@ cds.on('bootstrap', (app) => {
 
         try {
             const jwt = getUserJwt(req);
+            const cookies = req.headers['x-adt-session-cookies'];
 
             /**
              * Tool executor — maps tool_call names to existing ADT endpoints.
@@ -907,7 +982,7 @@ cds.on('bootstrap', (app) => {
                             method: 'GET',
                             url: `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(params.query)}${params.objectType ? `&objectType=${params.objectType}` : ''}&maxResults=${params.maxResults || 50}`,
                             headers: { 'Accept': 'application/xml, application/vnd.sap.adt.repository.informationsystem.lists.v1+xml' }
-                        });
+                        }, cookies);
                         const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                         // Parse objects from ADT search XML
                         const items = [];
@@ -924,7 +999,7 @@ cds.on('bootstrap', (app) => {
                             method: 'GET',
                             url: `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(params.query)}&objectType=DEVC&maxResults=${params.maxResults || 20}`,
                             headers: { 'Accept': 'application/xml, application/vnd.sap.adt.repository.informationsystem.lists.v1+xml' }
-                        });
+                        }, cookies);
                         const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                         const items = [];
                         const re = /adtcore:uri="([^"]*)"[^>]*adtcore:type="([^"]*)"[^>]*adtcore:name="([^"]*)"(?:[^>]*adtcore:description="([^"]*)")?/g;
@@ -944,7 +1019,7 @@ cds.on('bootstrap', (app) => {
                         const response = await callAdt(dest, jwt, {
                             method: 'GET', url: srcUrl,
                             headers: { 'Accept': 'text/plain, */*' }
-                        });
+                        }, cookies);
                         return { success: true, source: response.data, sourceUrl: srcUrl };
                     }
 
@@ -973,23 +1048,23 @@ cds.on('bootstrap', (app) => {
                         const cleanDesc = (params.description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
                         const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, params.parentPath || '');
                         const postUrl = params.transport ? `${ADT_BASE}/${cfg.uri}?corrNr=${encodeURIComponent(params.transport)}` : `${ADT_BASE}/${cfg.uri}`;
-                        const csrf = await fetchAdtCsrfToken(dest, jwt);
+                        const csrf = await fetchAdtCsrfToken(dest, jwt, cookies);
                         const response = await callAdt(dest, jwt, {
                             method: 'POST', url: postUrl,
                             headers: csrfHeaders(csrf, { 'Content-Type': cfg.ct, 'Accept': '*/*' }),
                             data: xmlBody
-                        });
+                        }, cookies);
                         const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
                         return { success: true, objectUrl };
                     }
 
                     case 'lock': {
-                        const csrf = await fetchAdtCsrfToken(dest, jwt);
+                        const csrf = await fetchAdtCsrfToken(dest, jwt, cookies);
                         const response = await callAdt(dest, jwt, {
                             method: 'POST',
                             url: `${params.objectUrl}?_action=LOCK&accessMode=MODIFY`,
                             headers: csrfHeaders(csrf, { 'Accept': '*/*' })
-                        });
+                        }, cookies);
                         const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                         let lockHandle = '';
                         for (const p of [/<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i, /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i]) {
@@ -1008,14 +1083,14 @@ cds.on('bootstrap', (app) => {
                     case 'set_source': {
                         const srcUrl = params.sourceUrl || `${params.objectUrl}/source/main`;
                         let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
-                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
+                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt, cookies);
                         let putUrl = `${srcUrl}?lockHandle=${encodeURIComponent(params.lockHandle)}`;
                         if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
                         await callAdt(dest, jwt, {
                             method: 'PUT', url: putUrl,
                             headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8' }),
                             data: params.source || ''
-                        });
+                        }, cookies);
                         return { success: true, message: 'Source saved', sourceUrl: srcUrl };
                     }
 
