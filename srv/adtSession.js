@@ -96,9 +96,10 @@ function throwAdtError(axiosResponse, step) {
  * @param {string} opts.sourceUrl    - ADT source URL (or objectUrl/source/main)
  * @param {string} opts.source       - ABAP source code to save
  * @param {string} [opts.cookies]    - Existing session cookies to reuse
+ * @param {string} [opts.connectionId] - Persistent ADT connection ID
  * @param {Function} opts.log        - Logging function (msg => void)
  */
-async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, transport, cookies, log }) {
+async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, transport, cookies, connectionId, log }) {
     log = log || console.log;
 
     const { client } = await buildAdtAxiosClient(destName, userJwt);
@@ -111,7 +112,9 @@ async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, 
         headers: {
             'X-CSRF-Token': 'Fetch',
             'Accept':       'application/atomsvc+xml, application/xml, */*',
-            'Cookie':       cookies || ''
+            'Cookie':       cookies || '',
+            'X-sap-adt-session-type': 'stateful',
+            'sap-adt-connection-id': connectionId || ''
         }
     });
     const csrfToken = csrfResp.headers['x-csrf-token'] || '';
@@ -128,7 +131,15 @@ async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, 
     const lockResp = await client.post(
         `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
         null,
-        { headers: { 'X-CSRF-Token': csrfToken, 'Cookie': sessionCookie, 'Accept': '*/*' } }
+        { 
+            headers: { 
+                'X-CSRF-Token': csrfToken, 
+                'Cookie': sessionCookie, 
+                'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9',
+                'X-sap-adt-session-type': 'stateful',
+                'sap-adt-connection-id': connectionId || ''
+            } 
+        }
     );
     if (lockResp.status >= 400) throwAdtError(lockResp, 'lock');
 
@@ -159,23 +170,39 @@ async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, 
         headers: {
             'X-CSRF-Token': csrfToken,
             'Cookie':       sessionCookie,
-            'Content-Type': 'text/plain; charset=utf-8'
+            'Content-Type': 'text/plain; charset=utf-8',
+            'X-sap-adt-session-type': 'stateful',
+            'sap-adt-connection-id': connectionId || ''
         }
     });
     if (putResp.status >= 400) {
         // Try to cleanup before throwing
-        await client.delete(
+        await client.post(
             `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-            { headers: { 'X-CSRF-Token': csrfToken, 'Cookie': sessionCookie } }
+            null,
+            { headers: { 
+                'X-CSRF-Token': csrfToken, 
+                'Cookie': sessionCookie,
+                'X-sap-adt-session-type': 'stateful',
+                'sap-adt-connection-id': connectionId || ''
+            } }
         ).catch(e => log(`[adtSession] cleanup unlock failed: ${e.message}`));
         throwAdtError(putResp, 'set-source');
     }
     log(`[adtSession] step3/source saved to ${sourceUrl}`);
 
-    // ── Step 4: Unlock
-    const unlockResp = await client.delete(
+    // ── Step 4: Unlock (Trace shows POST /sap/bc/adt/.../_action=UNLOCK)
+    const unlockResp = await client.post(
         `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-        { headers: { 'X-CSRF-Token': csrfToken, 'Cookie': sessionCookie } }
+        null,
+        { 
+            headers: { 
+                'X-CSRF-Token': csrfToken, 
+                'Cookie': sessionCookie,
+                'X-sap-adt-session-type': 'stateful',
+                'sap-adt-connection-id': connectionId || ''
+            } 
+        }
     );
     if (unlockResp.status >= 400) {
         log(`[adtSession] unlock returned HTTP ${unlockResp.status} (non-fatal)`);

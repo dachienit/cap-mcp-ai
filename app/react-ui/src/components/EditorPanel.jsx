@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getObjectSource, lockObject, setObjectSource, saveObjectSource, unlock, activateObjects } from '../api.js';
 
-export default function EditorPanel({ destinationName, initialObject, addToast }) {
+export default function EditorPanel({ destinationName, isLoggedIn, initialObject, addToast }) {
     const [objectUrl, setObjectUrl] = useState(initialObject?.url || '');
     const [objectName, setObjectName] = useState(initialObject?.name || '');
     const [objectType, setObjectType] = useState(initialObject?.type || 'PROG');
@@ -164,10 +164,11 @@ export default function EditorPanel({ destinationName, initialObject, addToast }
                             id="btn-load-source"
                             className="btn btn-primary"
                             onClick={handleLoad}
-                            disabled={busy}
+                            disabled={busy || !isLoggedIn}
                         >
                             {loadingState === 'loading' ? <><span className="spinner" /> Loading…</> : 'Load Source'}
                         </button>
+                        {!isLoggedIn && <div style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '4px' }}>Connect first</div>}
                     </div>
                 </div>
             </div>

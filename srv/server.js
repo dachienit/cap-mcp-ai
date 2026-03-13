@@ -35,12 +35,18 @@ cds.on('bootstrap', (app) => {
         return jwtFromHeader || jwtFromAuthInfo || null;
     }
 
-    async function callAdt(destinationName, jwt, options, cookies = null) {
+    async function callAdt(destinationName, jwt, options, cookies = null, connectionId = null) {
         const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
         try {
+            options.headers = options.headers || {};
             if (cookies) {
-                options.headers = options.headers || {};
                 options.headers['Cookie'] = cookies;
+                // CRITICAL: ABAP requires this header in EVERY request within a stateful session 
+                // to keep the session alive and prevent premature unlocking.
+                options.headers['X-sap-adt-session-type'] = 'stateful';
+            }
+            if (connectionId) {
+                options.headers['sap-adt-connection-id'] = connectionId;
             }
             return await executeHttpRequest(
                 { destinationName, jwt },
@@ -69,6 +75,18 @@ cds.on('bootstrap', (app) => {
             downstream: err.downstreamBody,
             endpoint
         });
+    }
+
+    /**
+     * Helper to enforce that a session is established before allowing ADT operations.
+     */
+    function requireAdtSession(req, res) {
+        const cookies = req.headers['x-adt-session-cookies'];
+        if (!cookies || cookies === 'null') {
+            res.status(401).json({ error: 'Not connected to SAP system. Please click the "Connect" button first.' });
+            return null;
+        }
+        return cookies;
     }
 
     // write requests can send the same cookie, letting SAP match the session.
@@ -156,6 +174,7 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
+            const connectionId = req.headers['x-adt-connection-id'];
             // Request stateful session via compatibility graph
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
@@ -164,7 +183,7 @@ cds.on('bootstrap', (app) => {
                     'Accept': 'application/xml',
                     'X-sap-adt-session-type': 'stateful'
                 }
-            });
+            }, null, connectionId);
 
             const setCookieHeader = response.headers['set-cookie'];
             let cookies = '';
@@ -181,32 +200,43 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/logout', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName) return res.status(400).json({ error: 'Missing destinationName' });
 
-            if (process.env.NODE_ENV !== 'production' || !cookies) {
+            if (process.env.NODE_ENV !== 'production') {
                 return res.json({ success: true });
             }
 
             const jwt = getUserJwt(req);
-            // Terminate ADT session
-            await callAdt(destinationName, jwt, {
-                method: 'DELETE',
-                url: `${ADT_BASE}/sessions`
-            }, cookies);
+            const connectionId = req.headers['x-adt-connection-id'];
+            // Terminate ADT session. Note: some systems prefer /sessions/ vs /sessions
+            try {
+                await callAdt(destinationName, jwt, {
+                    method: 'DELETE',
+                    url: `${ADT_BASE}/sessions`
+                }, cookies, connectionId);
+            } catch (err) {
+                console.warn('[adt/logout] DELETE /sessions failed, trying alternative:', err.message);
+            }
 
-            res.json({ success: true });
+            res.json({ success: true, message: 'Logged out from SAP' });
         } catch (error) {
-            res.json({ success: true });
+            console.error('[adt/logout] Error:', error.message);
+            // Even if server session termination fails, we return success so client clears its state
+            res.json({ success: true, warning: 'Client session cleared' });
         }
     });
 
     app.post('/api/adt/search', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName, query, objectType = '', maxResults = 50 } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -227,6 +257,7 @@ cds.on('bootstrap', (app) => {
             let url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&reposistoryScope=ALL`;
             if (objectType) url += `&objectType=${encodeURIComponent(objectType)}`;
 
+            const connectionId = req.headers['x-adt-connection-id'];
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url,
@@ -235,7 +266,7 @@ cds.on('bootstrap', (app) => {
                     'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml',
                     'sap-client': process.env.SAP_CLIENT || ''
                 }
-            }, cookies);
+            }, cookies, connectionId);
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/search] response status=${response.status}, body_length=${xml.length}`);
@@ -274,9 +305,11 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/search-package', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName, query, maxResults = 50 } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -299,11 +332,12 @@ cds.on('bootstrap', (app) => {
             if (!isExact) {
                 // Wildcard search: list matching packages
                 const url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}&maxResults=${maxResults}&objectType=DEVC%2FK`;
+                const connectionId = req.headers['x-adt-connection-id'];
                 const response = await callAdt(destinationName, jwt, {
                     method: 'GET',
                     url,
                     headers: { 'Accept': 'application/xml' }
-                }, cookies);
+                }, cookies, connectionId);
                 
                 const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                 const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
@@ -319,11 +353,12 @@ cds.on('bootstrap', (app) => {
                 // Exact search: get package info AND its objects
                 // 1. Get the package itself
                 const pkgUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}&maxResults=1&objectType=DEVC%2FK`;
+                const connectionId = req.headers['x-adt-connection-id'];
                 const pkgResponse = await callAdt(destinationName, jwt, {
                     method: 'GET',
                     url: pkgUrl,
                     headers: { 'Accept': 'application/xml' }
-                }, cookies);
+                }, cookies, connectionId);
                 
                 let pkgXml = typeof pkgResponse.data === 'string' ? pkgResponse.data : JSON.stringify(pkgResponse.data);
                 const pkgRefPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
@@ -347,11 +382,12 @@ cds.on('bootstrap', (app) => {
                     if (isNaN(limit) || limit < 1) limit = 50;
                     
                     const contentsUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=*&packageName=${encodeURIComponent(query)}&maxResults=${limit}`;
+                    const connectionId = req.headers['x-adt-connection-id'];
                     const contentsResp = await callAdt(destinationName, jwt, {
                         method: 'GET',
                         url: contentsUrl,
                         headers: { 'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml' }
-                    }, cookies);
+                    }, cookies, connectionId);
                     
                     const xml = typeof contentsResp.data === 'string' ? contentsResp.data : JSON.stringify(contentsResp.data);
                     const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
@@ -382,9 +418,11 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/transports', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName, packageName } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !packageName) return res.status(400).json({ error: 'Missing destinationName or packageName' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -404,11 +442,12 @@ cds.on('bootstrap', (app) => {
             const packageUri = `/sap/bc/adt/packages/${encodeURIComponent(packageName.toLowerCase())}`;
             const url = `${ADT_BASE}/repository/informationsystem/objectproperties/transports?uri=${encodeURIComponent(packageUri)}`;
             
+            const connectionId = req.headers['x-adt-connection-id'];
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url,
                 headers: { 'Accept': 'application/vnd.sap.adt.repository.trproperties.result.v1+xml' }
-            }, cookies);
+            }, cookies, connectionId);
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             const transports = [];
@@ -441,6 +480,9 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/create-object', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const {
                 destinationName, objectType, name, packageName,
@@ -448,7 +490,6 @@ cds.on('bootstrap', (app) => {
                 parentPath,   // URL of the parent package (e.g. /sap/bc/adt/packages/zpk_iyh1hc)
                 transport     // Transport request number (e.g. T4XK903271), auto-created if empty
             } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectType || !name || !packageName) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectType, name, packageName' });
             }
@@ -547,13 +588,14 @@ cds.on('bootstrap', (app) => {
                 : `${ADT_BASE}/${cfg.uri}`;
             console.log(`[adt/create-object] POST url: ${postUrl}`);
 
+            const connectionId = req.headers['x-adt-connection-id'];
             const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: postUrl,
                 headers: csrfHeaders(csrf, { 'Content-Type': cfg.contentType, 'Accept': '*/*' }),
                 data: xmlBody
-            }, cookies);
+            }, cookies, connectionId);
 
             const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
             console.log(`[adt/create-object] created: ${objectUrl}`);
@@ -564,9 +606,11 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/lock', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName, objectUrl, accessMode = 'MODIFY' } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl) return res.status(400).json({ error: 'Missing destinationName or objectUrl' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -581,13 +625,17 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/lock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
+            const connectionId = req.headers['x-adt-connection-id'];
             const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
             console.log(`[adt/lock] csrf=${csrf.token?.substring(0, 10)}, sending lock to: ${objectUrl}?_action=LOCK&accessMode=${accessMode}`);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
-                headers: csrfHeaders(csrf, { 'Accept': '*/*' })
-            }, cookies);
+                headers: csrfHeaders(csrf, { 
+                    'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9',
+                    'X-sap-adt-session-type': 'stateful'
+                })
+            }, cookies, connectionId);
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/lock] response xml (first 300): ${xml.substring(0, 300)}`);
@@ -635,14 +683,16 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-   app.post('/api/adt/set-source', async (req, res) => {
+    app.post('/api/adt/set-source', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const {
                 destinationName, objectUrl, sourceUrl, lockHandle,
                 sessionCookie, lockCsrfToken, source,
                 transport  // optional Transport request number
             } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl || !lockHandle || source === undefined) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, lockHandle, source' });
             }
@@ -674,8 +724,6 @@ cds.on('bootstrap', (app) => {
             }
 
             console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
-            console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
-            console.log(`[adt/set-source] => REQ.BODY: sessionCookie=${!!sessionCookie}, lockCsrfToken: ${!!lockCsrfToken}`);
 
             // Use the session cookie and CSRF token provided by the client (from the lock step)
             // This guarantees SAP sees the EXACT SAME session and token for this write operation.
@@ -691,12 +739,13 @@ cds.on('bootstrap', (app) => {
             if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
             console.log(`[adt/set-source] PUT url: ${putUrl}`);
 
+            const connectionId = req.headers['x-adt-connection-id'];
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
                 url: putUrl,
                 headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8', 'Accept': 'text/plain, */*' }),
                 data: source
-            }, cookies);
+            }, cookies, connectionId);
             res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'set-source');
@@ -704,9 +753,11 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/unlock', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName, objectUrl, lockHandle, sessionCookie, lockCsrfToken } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl || !lockHandle) return res.status(400).json({ error: 'Missing fields' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -724,11 +775,12 @@ cds.on('bootstrap', (app) => {
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
 
+            const connectionId = req.headers['x-adt-connection-id'];
             await callAdt(destinationName, jwt, {
-                method: 'DELETE',
+                method: 'POST', // trace shows POST for UNLOCK
                 url: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-                headers: csrfHeaders(csrf)
-            }, cookies);
+                headers: csrfHeaders(csrf, { 'X-sap-adt-session-type': 'stateful' })
+            }, cookies, connectionId);
             res.json({ success: true, message: 'Object unlocked' });
         } catch (error) {
             return handleAdtError(res, error, 'unlock');
@@ -736,9 +788,11 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/activate', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName, objects } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             // objects: Array of { name, url, type, parentUri }
             // OR MCP_ABAP format: { 'adtcore:uri', 'adtcore:type', 'adtcore:name', 'adtcore:parentUri' }
             if (!destinationName || !objects || !objects.length) {
@@ -786,6 +840,7 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/activate] xml: ${xmlBody}`);
 
+            const connectionId = req.headers['x-adt-connection-id'];
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
@@ -794,7 +849,7 @@ cds.on('bootstrap', (app) => {
                     'Accept': 'application/xml, */*'
                 }),
                 data: xmlBody
-            }, cookies);
+            }, cookies, connectionId);
 
             const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             console.log(`[adt/activate] status=${response.status}, response=${respXml.substring(0, 300)}`);
@@ -817,6 +872,9 @@ cds.on('bootstrap', (app) => {
     // Must lock the class first → pass lockHandle from lock step
     // ═══════════════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/create-test-include', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const {
                 destinationName,
@@ -826,7 +884,6 @@ cds.on('bootstrap', (app) => {
                 lockCsrfToken,  // from lock step
                 transport       // optional TR number
             } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !clas || !lockHandle) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, clas, lockHandle' });
             }
@@ -851,6 +908,7 @@ cds.on('bootstrap', (app) => {
             if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
             console.log(`[adt/create-test-include] PUT url: ${putUrl}`);
 
+            const connectionId = req.headers['x-adt-connection-id'];
             await callAdt(destinationName, jwt, {
                 method: 'PUT',
                 url: putUrl,
@@ -859,7 +917,7 @@ cds.on('bootstrap', (app) => {
                     'Accept': '*/*'
                 }),
                 data: ''  // empty body creates the test include
-            }, cookies);
+            }, cookies, connectionId);
             res.json({ success: true, message: `Test include created for class ${clas.toUpperCase()}` });
         } catch (error) {
             return handleAdtError(res, error, 'create-test-include');
@@ -867,9 +925,11 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/get-source', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         try {
             const { destinationName, objectUrl } = req.body;
-            const cookies = req.headers['x-adt-session-cookies'];
             if (!destinationName || !objectUrl) return res.status(400).json({ error: 'Missing fields' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -892,11 +952,12 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/get-source] user=${logonName}, dest=${destinationName}, url=${sourceUrl}`);
 
+            const connectionId = req.headers['x-adt-connection-id'];
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url: sourceUrl,
                 headers: { 'Accept': 'text/plain, */*' }
-            }, cookies);
+            }, cookies, connectionId);
             res.json({ success: true, source: response.data, sourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'get-source');
@@ -904,22 +965,26 @@ cds.on('bootstrap', (app) => {
     });
 
     app.post('/api/adt/save-source', async (req, res) => {
+        const cookies = requireAdtSession(req, res);
+        if (!cookies) return;
+
         const { objectUrl, sourceUrl: reqSourceUrl, source, transport, destinationName } = req.body;
         if (!objectUrl) return res.status(400).json({ error: 'Missing objectUrl' });
         if (source === undefined || source === null) return res.status(400).json({ error: 'Missing source' });
 
         const dest = destinationName || 'T4X_011';
-        const jwt  = getUserJwt(req);
-        const user = req.authInfo?.getLogonName?.() || 'unknown';
         const srcUrl = reqSourceUrl || `${objectUrl}/source/main`;
-        const cookies = req.headers['x-adt-session-cookies'];
-        console.log(`[adt/save-source] user=${user}, dest=${dest}, url=${objectUrl}`);
 
         if (process.env.NODE_ENV !== 'production') {
             return res.json({ success: true, message: `[Mock] Source saved for ${objectUrl}`, sourceUrl: srcUrl });
         }
 
         try {
+            const jwt  = getUserJwt(req);
+            const user = req.authInfo?.getLogonName?.() || 'unknown';
+            console.log(`[adt/save-source] user=${user}, dest=${dest}, url=${objectUrl}`);
+
+            const connectionId = req.headers['x-adt-connection-id'];
             const { adtSaveSource } = require('./adtSession');
             const result = await adtSaveSource({
                 destName:   dest,
@@ -929,6 +994,7 @@ cds.on('bootstrap', (app) => {
                 source,
                 transport,
                 cookies,
+                connectionId,
                 log: (msg) => console.log(msg)
             });
             res.json({ success: true, message: 'Source saved and unlocked', sourceUrl: result.sourceUrl });
@@ -966,14 +1032,19 @@ cds.on('bootstrap', (app) => {
         try {
             const jwt = getUserJwt(req);
             const cookies = req.headers['x-adt-session-cookies'];
+            const connectionId = req.headers['x-adt-connection-id'];
 
             /**
              * Tool executor — maps tool_call names to existing ADT endpoints.
              * The AI calls these tools by name; the server executes them
              * using the same helpers (callAdt, csrf, etc.) already in server.js.
              */
-            const toolExecutor = async (toolName, params) => {
-                console.log(`[ai/tool] executing tool=${toolName}`);
+            const toolExecutor = async (toolName, params, connectionId = null) => {
+                console.log(`[ai/tool] executing tool=${toolName}, connectionId=${connectionId}`);
+
+                if (!cookies || cookies === 'null') {
+                    throw new Error('Not connected to SAP system. Please click the "Connect" button in the header before using the AI Assistant.');
+                }
 
                 switch (toolName) {
 
@@ -1019,7 +1090,7 @@ cds.on('bootstrap', (app) => {
                         const response = await callAdt(dest, jwt, {
                             method: 'GET', url: srcUrl,
                             headers: { 'Accept': 'text/plain, */*' }
-                        }, cookies);
+                        }, cookies, connectionId);
                         return { success: true, source: response.data, sourceUrl: srcUrl };
                     }
 
@@ -1053,7 +1124,7 @@ cds.on('bootstrap', (app) => {
                             method: 'POST', url: postUrl,
                             headers: csrfHeaders(csrf, { 'Content-Type': cfg.ct, 'Accept': '*/*' }),
                             data: xmlBody
-                        }, cookies);
+                        }, cookies, connectionId);
                         const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
                         return { success: true, objectUrl };
                     }
@@ -1063,8 +1134,11 @@ cds.on('bootstrap', (app) => {
                         const response = await callAdt(dest, jwt, {
                             method: 'POST',
                             url: `${params.objectUrl}?_action=LOCK&accessMode=MODIFY`,
-                            headers: csrfHeaders(csrf, { 'Accept': '*/*' })
-                        }, cookies);
+                            headers: csrfHeaders(csrf, { 
+                                'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9',
+                                'X-sap-adt-session-type': 'stateful'
+                            })
+                        }, cookies, connectionId);
                         const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                         let lockHandle = '';
                         for (const p of [/<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i, /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i]) {
@@ -1088,9 +1162,9 @@ cds.on('bootstrap', (app) => {
                         if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
                         await callAdt(dest, jwt, {
                             method: 'PUT', url: putUrl,
-                            headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8' }),
+                            headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8', 'X-sap-adt-session-type': 'stateful' }),
                             data: params.source || ''
-                        }, cookies);
+                        }, cookies, connectionId);
                         return { success: true, message: 'Source saved', sourceUrl: srcUrl };
                     }
 
@@ -1098,10 +1172,10 @@ cds.on('bootstrap', (app) => {
                         let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
                         if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
                         await callAdt(dest, jwt, {
-                            method: 'DELETE',
+                            method: 'POST',
                             url: `${params.objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(params.lockHandle)}`,
-                            headers: csrfHeaders(csrf)
-                        });
+                            headers: csrfHeaders(csrf, { 'X-sap-adt-session-type': 'stateful' })
+                        }, cookies, connectionId);
                         return { success: true, message: 'Object unlocked' };
                     }
 
@@ -1123,9 +1197,9 @@ cds.on('bootstrap', (app) => {
                         const response = await callAdt(dest, jwt, {
                             method: 'POST',
                             url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
-                            headers: csrfHeaders(csrf, { 'Content-Type': 'application/xml', 'Accept': 'application/xml, */*' }),
+                            headers: csrfHeaders(csrf, { 'Content-Type': 'application/xml', 'Accept': 'application/xml, */*', 'X-sap-adt-session-type': 'stateful' }),
                             data: xmlBody
-                        });
+                        }, cookies, connectionId);
                         const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                         const hasError = /<[^>]*type="E"[^>]*>/i.test(respXml) || /<error/i.test(respXml);
                         return { success: !hasError, message: hasError ? 'Activation completed with errors' : 'Activated successfully' };
@@ -1137,7 +1211,11 @@ cds.on('bootstrap', (app) => {
                         if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
                         let putUrl = `${ADT_BASE}/oo/classes/${cleanClas}/includes/testclasses?lockHandle=${encodeURIComponent(params.lockHandle)}`;
                         if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
-                        await callAdt(dest, jwt, { method: 'PUT', url: putUrl, headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8' }), data: '' });
+                        await callAdt(dest, jwt, { 
+                            method: 'PUT', url: putUrl, 
+                            headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8', 'X-sap-adt-session-type': 'stateful' }), 
+                            data: '' 
+                        }, cookies, connectionId);
                         return { success: true, message: `Test include created for ${(params.clas || '').toUpperCase()}` };
                     }
 
@@ -1146,7 +1224,7 @@ cds.on('bootstrap', (app) => {
                 }
             };
 
-            const result = await agenticChat(message, historyId || null, dest, toolExecutor);
+            const result = await agenticChat(message, historyId || null, dest, (name, params) => toolExecutor(name, params, connectionId));
             res.json({ success: true, ...result });
 
         } catch (err) {

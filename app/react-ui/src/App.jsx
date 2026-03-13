@@ -193,6 +193,7 @@ export default function App() {
           <div style={{ display: activeTab === 'search' ? 'block' : 'none' }}>
             <SearchPanel
               destinationName={destinationName}
+              isLoggedIn={isLoggedIn}
               onSelectObject={handleSelectFromSearch}
               addToast={addToast}
             />
@@ -200,14 +201,15 @@ export default function App() {
           <div style={{ display: activeTab === 'create' ? 'block' : 'none' }}>
             <CreatePanel
               destinationName={destinationName}
+              isLoggedIn={isLoggedIn}
               userInfo={userInfo}
               addToast={addToast}
             />
           </div>
           <div style={{ display: activeTab === 'editor' ? 'block' : 'none' }}>
-            {/* Delay rendering EditorPanel heavily if not active but usually okay to mount */}
             <EditorPanel
               destinationName={destinationName}
+              isLoggedIn={isLoggedIn}
               initialObject={selectedObject}
               addToast={addToast}
             />
@@ -215,6 +217,7 @@ export default function App() {
           <div style={{ display: activeTab === 'ai' ? 'block' : 'none' }}>
             <AiPanel
               destinationName={destinationName}
+              isLoggedIn={isLoggedIn}
             />
           </div>
         </main>

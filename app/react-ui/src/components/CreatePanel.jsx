@@ -8,7 +8,7 @@ const OBJECT_TYPES = [
     { value: 'FUGR', label: 'Function Group (FUGR)', template: `FUNCTION-POOL <name>.` },
 ];
 
-export default function CreatePanel({ destinationName, userInfo, addToast }) {
+export default function CreatePanel({ destinationName, isLoggedIn, userInfo, addToast }) {
     const defaultResponsible = userInfo?.userId || 'DEVELOPER';
 
     const [form, setForm] = useState({
@@ -212,10 +212,11 @@ export default function CreatePanel({ destinationName, userInfo, addToast }) {
                         id="btn-create-object"
                         className="btn btn-success"
                         onClick={handleCreate}
-                        disabled={loading || !form.name}
+                        disabled={loading || !form.name || !isLoggedIn}
                     >
                         {loading ? <><span className="spinner" />Creating…</> : 'Create Object'}
                     </button>
+                    {!isLoggedIn && <div style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '4px' }}>Connect system first</div>}
                     <button className="btn btn-ghost" onClick={handleReset} disabled={loading}>
                         ↩ Reset
                     </button>

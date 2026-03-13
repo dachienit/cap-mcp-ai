@@ -5,6 +5,14 @@
 
 let csrfToken = null;
 let adtSessionCookies = null;
+let adtConnectionId = null;
+
+function generateUUID() {
+    return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
 
 export function setCsrfToken(token) {
     csrfToken = token;
@@ -18,6 +26,10 @@ async function post(endpoint, body) {
     
     if (adtSessionCookies) {
         headers['x-adt-session-cookies'] = adtSessionCookies;
+    }
+
+    if (adtConnectionId) {
+        headers['x-adt-connection-id'] = adtConnectionId;
     }
 
     const res = await fetch(endpoint, {
@@ -34,6 +46,7 @@ async function post(endpoint, body) {
  * Login to ADT (Stateful Session)
  */
 export async function adtLogin(destinationName) {
+    adtConnectionId = generateUUID();
     const res = await post('/api/adt/login', { destinationName });
     if (res.success && res.cookies) {
         adtSessionCookies = res.cookies;
@@ -49,6 +62,7 @@ export async function adtLogout(destinationName) {
         await post('/api/adt/logout', { destinationName });
     } finally {
         adtSessionCookies = null;
+        adtConnectionId = null;
     }
 }
 

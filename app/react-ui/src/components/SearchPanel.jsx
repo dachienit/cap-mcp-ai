@@ -13,7 +13,7 @@ const OBJECT_TYPES = [
     { value: 'MSAG', label: 'Message Class (MSAG)' },
 ];
 
-export default function SearchPanel({ destinationName, onSelectObject, addToast }) {
+export default function SearchPanel({ destinationName, isLoggedIn, onSelectObject, addToast }) {
     // ── Object Search state
     const [objQuery, setObjQuery] = useState('');
     const [objType, setObjType] = useState('');
@@ -219,10 +219,11 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                             id="btn-search-obj"
                             className="btn btn-primary"
                             onClick={handleSearchObj}
-                            disabled={objLoading}
+                            disabled={objLoading || !isLoggedIn}
                         >
                             {objLoading ? <><span className="spinner" />Searching…</> : 'Search'}
                         </button>
+                        {!isLoggedIn && <div style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '4px' }}>Connect first</div>}
                     </div>
                 </div>
 
@@ -341,10 +342,11 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                             id="btn-search-pkg"
                             className="btn btn-purple"
                             onClick={handleSearchPkg}
-                            disabled={pkgLoading}
+                            disabled={pkgLoading || !isLoggedIn}
                         >
                             {pkgLoading ? <><span className="spinner" />Searching…</> : 'Search'}
                         </button>
+                        {!isLoggedIn && <div style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '4px' }}>Connect first</div>}
                     </div>
                 </div>
 
