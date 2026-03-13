@@ -229,23 +229,84 @@ cds.on('bootstrap', (app) => {
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
             console.log(`[adt/search-package] user=${logonName}, dest=${destinationName}, query=${query}`);
 
-            const url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&objectType=DEVC%2FK`;
-            const response = await callAdt(destinationName, jwt, {
-                method: 'GET',
-                url,
-                headers: { 'Accept': 'application/xml' }
-            });
+            const isExact = !query.includes('*');
+            let objects = [];
 
-            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            const objects = [];
-            const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
-            const namePattern = /adtcore:name="([^"]+)"/;
-            const descPattern = /adtcore:description="([^"]*)"/;
-            let match;
-            while ((match = refPattern.exec(xml)) !== null) {
-                const tag = match[0];
-                const name = (namePattern.exec(tag) || [])[1];
-                if (name) objects.push({ name, type: 'DEVC', description: (descPattern.exec(tag) || [])[1] || '' });
+            if (!isExact) {
+                // Wildcard search: list matching packages
+                const url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}&maxResults=${maxResults}&objectType=DEVC%2FK`;
+                const response = await callAdt(destinationName, jwt, {
+                    method: 'GET',
+                    url,
+                    headers: { 'Accept': 'application/xml' }
+                });
+                
+                const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+                const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
+                const namePattern = /adtcore:name="([^"]+)"/;
+                const descPattern = /adtcore:description="([^"]*)"/;
+                let match;
+                while ((match = refPattern.exec(xml)) !== null) {
+                    const tag = match[0];
+                    const name = (namePattern.exec(tag) || [])[1];
+                    if (name) objects.push({ name, type: 'DEVC', description: (descPattern.exec(tag) || [])[1] || '' });
+                }
+            } else {
+                // Exact search: get package info AND its objects
+                // 1. Get the package itself
+                const pkgUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}&maxResults=1&objectType=DEVC%2FK`;
+                const pkgResponse = await callAdt(destinationName, jwt, {
+                    method: 'GET',
+                    url: pkgUrl,
+                    headers: { 'Accept': 'application/xml' }
+                });
+                
+                let pkgXml = typeof pkgResponse.data === 'string' ? pkgResponse.data : JSON.stringify(pkgResponse.data);
+                const pkgRefPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
+                const namePattern = /adtcore:name="([^"]+)"/;
+                const descPattern = /adtcore:description="([^"]*)"/;
+                let match;
+                let pkgFound = false;
+                while ((match = pkgRefPattern.exec(pkgXml)) !== null) {
+                    const tag = match[0];
+                    const name = (namePattern.exec(tag) || [])[1];
+                    if (name && name.toUpperCase() === query.toUpperCase()) {
+                        objects.push({ name, type: 'DEVC', description: (descPattern.exec(tag) || [])[1] || '' });
+                        pkgFound = true;
+                        break;
+                    }
+                }
+
+                if (pkgFound) {
+                    // 2. Get all objects in package
+                    const contentsUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=*&packageName=${encodeURIComponent(query)}&maxResults=200`;
+                    const contentsResp = await callAdt(destinationName, jwt, {
+                        method: 'GET',
+                        url: contentsUrl,
+                        headers: { 'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml' }
+                    });
+                    
+                    const xml = typeof contentsResp.data === 'string' ? contentsResp.data : JSON.stringify(contentsResp.data);
+                    const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
+                    const typePattern = /adtcore:type="([^"]+)"/;
+                    const uriPattern = /adtcore:uri="([^"]*)"/;
+                    const pkgPattern = /adtcore:packageName="([^"]*)"/;
+                    
+                    while ((match = refPattern.exec(xml)) !== null) {
+                        const tag = match[0];
+                        const name = (namePattern.exec(tag) || [])[1];
+                        const type = (typePattern.exec(tag) || [])[1];
+                        if (name && type) {
+                            objects.push({
+                                name,
+                                type,
+                                description: (descPattern.exec(tag) || [])[1] || '',
+                                packageName: (pkgPattern.exec(tag) || [])[1] || query,
+                                url: (uriPattern.exec(tag) || [])[1] || ''
+                            });
+                        }
+                    }
+                }
             }
             res.json({ success: true, data: objects });
         } catch (error) {

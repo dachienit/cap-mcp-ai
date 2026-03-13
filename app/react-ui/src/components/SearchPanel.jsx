@@ -25,6 +25,7 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     const [pkgQuery, setPkgQuery] = useState('');
     const [pkgResults, setPkgResults] = useState(null);
     const [pkgLoading, setPkgLoading] = useState(false);
+    const [selectedPkgObj, setSelectedPkgObj] = useState(null);
 
     // ── Search Objects
     const handleSearchObj = async () => {
@@ -42,7 +43,7 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     // ── Search Packages
     const handleSearchPkg = async () => {
         if (!pkgQuery.trim()) { addToast('Please enter a search term', 'warning'); return; }
-        setPkgLoading(true); setPkgResults(null);
+        setPkgLoading(true); setPkgResults(null); setSelectedPkgObj(null);
         try {
             const result = await searchPackage(destinationName, pkgQuery.trim());
             setPkgResults(result.data || []);
@@ -200,32 +201,62 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                 )}
 
                 {pkgResults && pkgResults.length > 0 && (
-                    <div className="table-wrapper">
-                        <table className="result-table">
-                            <thead>
-                                <tr>
-                                    <th>Package Name</th>
-                                    <th>Description</th>
-                                    <th>Super Package</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {pkgResults.map((pkg, i) => (
-                                    <tr key={i}>
-                                        <td>
-                                            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
-                                                {pkg.name}
-                                            </span>
-                                        </td>
-                                        <td style={{ color: 'var(--text-secondary)' }}>{pkg.description || '—'}</td>
-                                        <td>
-                                            <span className="type-badge DEVC">{pkg.superPackage || '$TMP'}</span>
-                                        </td>
+                    <>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'var(--space-4)' }}>
+                            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                {pkgResults.length} result{pkgResults.length !== 1 ? 's' : ''}
+                                {selectedPkgObj ? ' — 1 selected' : ''}
+                            </span>
+                            {selectedPkgObj && (
+                                <button
+                                    className="btn btn-purple btn-sm"
+                                    onClick={() => onSelectObject(selectedPkgObj)}
+                                    id="btn-open-pkg-obj"
+                                >
+                                    Open in Editor
+                                </button>
+                            )}
+                        </div>
+                        <div className="table-wrapper">
+                            <table className="result-table">
+                                <thead>
+                                    <tr>
+                                        <th>Type</th>
+                                        <th>Name</th>
+                                        <th>Description</th>
+                                        <th>Package / Scope</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+                                </thead>
+                                <tbody>
+                                    {pkgResults.map((pkg, i) => {
+                                        const isSelectable = pkg.type !== 'DEVC';
+                                        return (
+                                            <tr 
+                                                key={i}
+                                                className={selectedPkgObj === pkg ? 'selected' : ''}
+                                                onClick={() => isSelectable ? setSelectedPkgObj(pkg === selectedPkgObj ? null : pkg) : null}
+                                                style={{ cursor: isSelectable ? 'pointer' : 'default' }}
+                                                title={!isSelectable ? 'Packages cannot be opened in editor' : ''}
+                                            >
+                                                <td><span className={`type-badge ${pkg.type || 'DEVC'}`}>{pkg.type || 'DEVC'}</span></td>
+                                                <td>
+                                                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
+                                                        {pkg.name}
+                                                    </span>
+                                                </td>
+                                                <td style={{ color: 'var(--text-secondary)' }}>{pkg.description || '—'}</td>
+                                                <td>
+                                                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: '#0077a8' }}>
+                                                        {pkg.packageName || pkg.superPackage || '—'}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
                 )}
             </div>
         </div>
