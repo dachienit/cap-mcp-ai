@@ -38,6 +38,7 @@ async function buildAdtAxiosClient(destName, userJwt) {
         headers: {
             // Principal Propagation: CC exchanges this JWT for a PP certificate
             'Authorization': `Bearer ${userJwt}`,
+            'User-Agent':    'Eclipse/4.37.0 ADT/3.52.0 (cap-mcp-ai)'
         }
     };
 
@@ -66,6 +67,22 @@ function parseCookies(setCookieHeader) {
     if (!setCookieHeader) return '';
     const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
     return cookies.map(c => c.split(';')[0]).join('; ');
+}
+
+/**
+ * Log interesting response headers for diagnostics.
+ */
+function logRespHeaders(response, log) {
+    const interestingHeaders = ['set-cookie', 'sap-contextid', 'sap-adt-connection-id', 'x-sap-web-session-id', 'location'];
+    const foundHeaders = Object.keys(response.headers)
+        .filter(h => interestingHeaders.includes(h.toLowerCase()) || h.toLowerCase().startsWith('sap-'))
+        .map(h => `${h}: ${response.headers[h]}`)
+        .join(', ');
+    if (foundHeaders) {
+        const url = response.config?.url || '';
+        const urlTail = url.includes('/') ? url.split('/').pop().split('?')[0] : url;
+        log(`[adtSession/headers] ${response.config?.method?.toUpperCase()} ${urlTail} => ${foundHeaders}`);
+    }
 }
 
 /**
@@ -117,6 +134,7 @@ async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, 
             'sap-adt-connection-id': connectionId || ''
         }
     });
+    logRespHeaders(csrfResp, log);
     const csrfToken = csrfResp.headers['x-csrf-token'] || '';
     const newCookies = parseCookies(csrfResp.headers['set-cookie']);
     sessionCookie   = newCookies || cookies || '';
@@ -141,6 +159,7 @@ async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, 
             } 
         }
     );
+    logRespHeaders(lockResp, log);
     if (lockResp.status >= 400) throwAdtError(lockResp, 'lock');
 
     const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);

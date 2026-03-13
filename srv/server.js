@@ -18,9 +18,15 @@ cds.on('bootstrap', (app) => {
     const express = require('express');
     app.use(express.json());
 
-    // ADT base path â€” SAP ICF node for ABAP Development Tools
+    // ADT base path — SAP ICF node for ABAP Development Tools
     // Cloud Connector must expose this path: /sap/bc/adt
     const ADT_BASE = '/sap/bc/adt';
+
+    // Shared Keep-Alive agents for connection affinity
+    const http  = require('http');
+    const https = require('https');
+    const SHARED_HTTP_AGENT  = new http.Agent({ keepAlive: true, maxSockets: 10, keepAliveMsecs: 30000 });
+    const SHARED_HTTPS_AGENT = new https.Agent({ keepAlive: true, maxSockets: 10, keepAliveMsecs: 30000, rejectUnauthorized: false });
 
     //   Authorization header = XSUAA JWT forwarded by approuter â†’ use this FIRST for PP
     //   authInfo.getToken() = fallback only
@@ -38,7 +44,8 @@ cds.on('bootstrap', (app) => {
     async function callAdt(destinationName, jwt, options, cookies = null, connectionId = null) {
         const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
         try {
-            options.headers = options.headers || {};
+            options.headers['User-Agent'] = 'Eclipse/4.37.0 ADT/3.52.0 (cap-mcp-ai)';
+
             if (cookies) {
                 options.headers['Cookie'] = cookies;
                 // CRITICAL: ABAP requires this header in EVERY request within a stateful session 
@@ -48,10 +55,28 @@ cds.on('bootstrap', (app) => {
             if (connectionId) {
                 options.headers['sap-adt-connection-id'] = connectionId;
             }
-            return await executeHttpRequest(
+
+            // Set Keep-Alive agents
+            options.httpAgent  = SHARED_HTTP_AGENT;
+            options.httpsAgent = SHARED_HTTPS_AGENT;
+
+            const response = await executeHttpRequest(
                 { destinationName, jwt },
                 options
             );
+
+            // DIAGNOSTICS: Log all response headers for debugging session issues
+            const interestingHeaders = ['set-cookie', 'sap-contextid', 'sap-adt-connection-id', 'x-sap-web-session-id', 'location'];
+            const foundHeaders = Object.keys(response.headers)
+                .filter(h => interestingHeaders.includes(h.toLowerCase()) || h.toLowerCase().startsWith('sap-'))
+                .map(h => `${h}: ${response.headers[h]}`)
+                .join(', ');
+            if (foundHeaders) {
+                const urlTail = options.url.includes('/') ? options.url.split('/').pop().split('?')[0] : options.url;
+                console.log(`[adt/headers] ${options.method} ${urlTail} => ${foundHeaders}`);
+            }
+
+            return response;
         } catch (err) {
             // Enrich error with downstream HTTP status so we can forward it to client
             const downstreamStatus = err.response?.status || err.cause?.response?.status;
@@ -90,12 +115,16 @@ cds.on('bootstrap', (app) => {
     }
 
     // write requests can send the same cookie, letting SAP match the session.
-    async function fetchAdtCsrfToken(destinationName, jwt, cookies = null) {
+    async function fetchAdtCsrfToken(destinationName, jwt, cookies = null, connectionId = null) {
         const resp = await callAdt(destinationName, jwt, {
             method: 'GET',
             url: `${ADT_BASE}/core/discovery`,
-            headers: { 'X-CSRF-Token': 'Fetch', 'Accept': 'application/atomsvc+xml, application/xml, */*' }
-        }, cookies);
+            headers: { 
+                'X-CSRF-Token': 'Fetch', 
+                'Accept': 'application/atomsvc+xml, application/xml, */*',
+                'X-sap-adt-session-type': 'stateful'
+            }
+        }, cookies, connectionId);
         const token = resp.headers['x-csrf-token'] || resp.headers['X-CSRF-Token'] || '';
         // Extract session cookie(s) â€” strip path/domain/max-age directives, keep name=value pairs
         const setCookieHeader = resp.headers['set-cookie'];
@@ -175,12 +204,12 @@ cds.on('bootstrap', (app) => {
 
             const jwt = getUserJwt(req);
             const connectionId = req.headers['x-adt-connection-id'];
-            // Request stateful session via compatibility graph
+            // Discovery call to initialize session — also sends X-sap-adt-session-type
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
-                url: `${ADT_BASE}/compatibility/graph`,
+                url: `${ADT_BASE}/core/discovery`,
                 headers: { 
-                    'Accept': 'application/xml',
+                    'Accept': 'application/atomsvc+xml',
                     'X-sap-adt-session-type': 'stateful'
                 }
             }, null, connectionId);
@@ -589,7 +618,7 @@ cds.on('bootstrap', (app) => {
             console.log(`[adt/create-object] POST url: ${postUrl}`);
 
             const connectionId = req.headers['x-adt-connection-id'];
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies, connectionId);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: postUrl,
@@ -626,7 +655,7 @@ cds.on('bootstrap', (app) => {
             console.log(`[adt/lock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
 
             const connectionId = req.headers['x-adt-connection-id'];
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies, connectionId);
             console.log(`[adt/lock] csrf=${csrf.token?.substring(0, 10)}, sending lock to: ${objectUrl}?_action=LOCK&accessMode=${accessMode}`);
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
@@ -729,8 +758,8 @@ cds.on('bootstrap', (app) => {
             // This guarantees SAP sees the EXACT SAME session and token for this write operation.
             let csrf = { cookie: sessionCookie, token: lockCsrfToken };
             if (!csrf.token || !csrf.cookie) {
-                // Fallback (might fail with 403 or 423 if lock requires same session)
-                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
+                const connectionId = req.headers['x-adt-connection-id'];
+                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies, connectionId);
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
 
@@ -769,13 +798,12 @@ cds.on('bootstrap', (app) => {
             console.log(`[adt/unlock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
             console.log(`[adt/unlock] => REQ.BODY: sessionCookie=${!!sessionCookie}, lockCsrfToken=${!!lockCsrfToken}`);
 
+            const connectionId = req.headers['x-adt-connection-id'];
             let csrf = { cookie: sessionCookie, token: lockCsrfToken };
             if (!csrf.token || !csrf.cookie) {
-                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
+                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies, connectionId);
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
-
-            const connectionId = req.headers['x-adt-connection-id'];
             await callAdt(destinationName, jwt, {
                 method: 'POST', // trace shows POST for UNLOCK
                 url: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
@@ -822,7 +850,8 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/activate] user=${logonName}, dest=${destinationName}, objects=${normalized.map(o => o.name).join(',')}`);
 
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
+            const connectionId = req.headers['x-adt-connection-id'];
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies, connectionId);
 
             // Build objectReferences XML — include type and parentUri if present
             const objRefs = normalized.map(o => {
@@ -840,7 +869,6 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/activate] xml: ${xmlBody}`);
 
-            const connectionId = req.headers['x-adt-connection-id'];
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
@@ -899,7 +927,8 @@ cds.on('bootstrap', (app) => {
 
             let csrf = { cookie: sessionCookie, token: lockCsrfToken };
             if (!csrf.token || !csrf.cookie) {
-                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies);
+                const connectionId = req.headers['x-adt-connection-id'];
+                csrf = await fetchAdtCsrfToken(destinationName, jwt, cookies, connectionId);
                 if (sessionCookie) csrf.cookie = sessionCookie;
             }
 
@@ -1119,7 +1148,8 @@ cds.on('bootstrap', (app) => {
                         const cleanDesc = (params.description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
                         const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, params.parentPath || '');
                         const postUrl = params.transport ? `${ADT_BASE}/${cfg.uri}?corrNr=${encodeURIComponent(params.transport)}` : `${ADT_BASE}/${cfg.uri}`;
-                        const csrf = await fetchAdtCsrfToken(dest, jwt, cookies);
+                        const connectionId = req.headers['x-adt-connection-id'];
+                        const csrf = await fetchAdtCsrfToken(dest, jwt, cookies, connectionId);
                         const response = await callAdt(dest, jwt, {
                             method: 'POST', url: postUrl,
                             headers: csrfHeaders(csrf, { 'Content-Type': cfg.ct, 'Accept': '*/*' }),
@@ -1130,7 +1160,7 @@ cds.on('bootstrap', (app) => {
                     }
 
                     case 'lock': {
-                        const csrf = await fetchAdtCsrfToken(dest, jwt, cookies);
+                        const csrf = await fetchAdtCsrfToken(dest, jwt, cookies, connectionId);
                         const response = await callAdt(dest, jwt, {
                             method: 'POST',
                             url: `${params.objectUrl}?_action=LOCK&accessMode=MODIFY`,
@@ -1157,7 +1187,7 @@ cds.on('bootstrap', (app) => {
                     case 'set_source': {
                         const srcUrl = params.sourceUrl || `${params.objectUrl}/source/main`;
                         let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
-                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt, cookies);
+                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt, cookies, connectionId);
                         let putUrl = `${srcUrl}?lockHandle=${encodeURIComponent(params.lockHandle)}`;
                         if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
                         await callAdt(dest, jwt, {
@@ -1170,7 +1200,7 @@ cds.on('bootstrap', (app) => {
 
                     case 'unlock': {
                         let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
-                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
+                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt, cookies, connectionId);
                         await callAdt(dest, jwt, {
                             method: 'POST',
                             url: `${params.objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(params.lockHandle)}`,
@@ -1180,7 +1210,7 @@ cds.on('bootstrap', (app) => {
                     }
 
                     case 'activate': {
-                        const csrf = await fetchAdtCsrfToken(dest, jwt);
+                        const csrf = await fetchAdtCsrfToken(dest, jwt, cookies, connectionId);
                         const normalized = (params.objects || []).map(o => ({
                             uri:       o.url || o['adtcore:uri'] || '',
                             name:      (o.name || o['adtcore:name'] || '').toUpperCase(),
