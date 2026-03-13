@@ -68,19 +68,42 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     // ── Hover Source
     const handleMouseEnterSource = async (e, objUrl) => {
         if (!objUrl) return;
+        if (hoverTimeout) clearTimeout(hoverTimeout);
         const rect = e.target.getBoundingClientRect();
-        // position popup nicely to the left of the button
-        setHoverSource({ show: true, url: objUrl, code: '', loading: true, x: rect.left - 420 /* approx pop width */, y: rect.bottom });
-        try {
-            const result = await getObjectSource(destinationName, objUrl);
-            setHoverSource(prev => ({ ...prev, code: result.source || 'No source code available.', loading: false }));
-        } catch (err) {
-            setHoverSource(prev => ({ ...prev, code: `Error loading source: ${err.message}`, loading: false }));
+        
+        // Use previous source if it's the same URL
+        const isSame = hoverSource.url === objUrl;
+        
+        // Position: closer to the left of the button, larger size
+        setHoverSource(prev => ({ 
+            ...prev, 
+            show: true, 
+            url: objUrl, 
+            loading: !isSame,
+            code: isSame ? prev.code : '',
+            x: rect.left - 805, 
+            y: rect.top - 10 
+        }));
+
+        if (!isSame) {
+            try {
+                const result = await getObjectSource(destinationName, objUrl);
+                setHoverSource(prev => ({ ...prev, code: result.source || 'No source code available.', loading: false }));
+            } catch (err) {
+                setHoverSource(prev => ({ ...prev, code: `Error loading source: ${err.message}`, loading: false }));
+            }
         }
     };
 
     const handleMouseLeaveSource = () => {
-        setHoverSource({ show: false, url: null, code: '', loading: false, x: 0, y: 0 });
+        const timeout = setTimeout(() => {
+            setHoverSource(prev => ({ ...prev, show: false }));
+        }, 400); // 400ms delay to allow moving to popup
+        setHoverTimeout(timeout);
+    };
+
+    const handleMouseEnterPopup = () => {
+        if (hoverTimeout) clearTimeout(hoverTimeout);
     };
 
     // ── Filter Data
@@ -110,16 +133,39 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
             {hoverSource.show && (
                 <div 
                     className="source-popup card shadow-md"
-                    style={{ position: 'fixed', left: hoverSource.x, top: hoverSource.y, zIndex: 9999, width: '400px', maxHeight: '300px', display: 'flex', flexDirection: 'column' }}
+                    onMouseEnter={handleMouseEnterPopup}
+                    onMouseLeave={handleMouseLeaveSource}
+                    style={{ 
+                        position: 'fixed', 
+                        left: hoverSource.x, 
+                        top: hoverSource.y, 
+                        zIndex: 9999, 
+                        width: '800px', 
+                        height: '600px', 
+                        display: 'flex', 
+                        flexDirection: 'column' 
+                    }}
                 >
-                    <div className="card-title" style={{ padding: '8px 12px', fontSize: '12px', backgroundColor: '#f5f7fb', borderBottom: '1px solid #dde3ed' }}>
-                        Source Preview
+                    <div className="card-title" style={{ padding: '10px 16px', fontSize: '14px', backgroundColor: '#f5f7fb', borderBottom: '1px solid #dde3ed', display: 'flex', justifyContent: 'space-between' }}>
+                        <span>Source Preview</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-hint)' }}>Hover out to close</span>
                     </div>
-                    <div style={{ padding: '8px', overflowY: 'auto', flex: 1, backgroundColor: '#ffffff', margin: 0 }}>
+                    <div style={{ padding: '0', overflowY: 'auto', flex: 1, backgroundColor: '#ffffff', margin: 0 }}>
                         {hoverSource.loading ? (
-                            <div style={{ color: 'var(--text-hint)', fontSize: '12px', padding: '8px' }}>Loading source...</div>
+                            <div style={{ color: 'var(--text-hint)', fontSize: '13px', padding: '20px', textAlign: 'center' }}>
+                                <span className="spinner spinner-dark" style={{ marginRight: '8px' }} />
+                                Loading source code...
+                            </div>
                         ) : (
-                            <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-body)', whiteSpace: 'pre-wrap' }}>
+                            <pre style={{ 
+                                margin: 0, 
+                                padding: '16px',
+                                fontSize: '12px', 
+                                fontFamily: 'var(--font-mono)', 
+                                color: 'var(--text-body)', 
+                                whiteSpace: 'pre',
+                                lineHeight: '1.5'
+                            }}>
                                 {hoverSource.code}
                             </pre>
                         )}
