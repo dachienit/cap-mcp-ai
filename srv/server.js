@@ -285,52 +285,57 @@ cds.on('bootstrap', (app) => {
                 'PROG': {
                     uri: 'programs/programs',
                     contentType: 'application/vnd.sap.adt.programs.programs.v2+xml',
-                    xml: (n, pkg, desc, resp, pkgPath) =>
+                    typeId: 'PROG/P',
+                    xml: (n, pkg, desc, resp, typeId) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<program:abapProgram xmlns:adtcore="http://www.sap.com/adt/core" xmlns:program="http://www.sap.com/adt/programs/programs"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
                         `  program:programType="executableProgram">\n` +
-                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
                         `</program:abapProgram>`
                 },
                 'CLAS': {
                     uri: 'oo/classes',
                     contentType: 'application/vnd.sap.adt.oo.classes.v4+xml',
-                    xml: (n, pkg, desc, resp, pkgPath) =>
+                    typeId: 'CLAS/OC',
+                    xml: (n, pkg, desc, resp, typeId) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}" class:visibility="public">\n` +
-                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}" class:visibility="public">\n` +
+                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
                         `</class:abapClass>`
                 },
                 'INTF': {
                     uri: 'oo/interfaces',
                     contentType: 'application/vnd.sap.adt.oo.interface.v2+xml',
-                    xml: (n, pkg, desc, resp, pkgPath) =>
+                    typeId: 'INTF/OI',
+                    xml: (n, pkg, desc, resp, typeId) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<oo:interface xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
-                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
+                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
                         `</oo:interface>`
                 },
                 'FUGR': {
                     uri: 'functions/groups',
                     contentType: 'application/vnd.sap.adt.functions.groups.v3+xml',
-                    xml: (n, pkg, desc, resp, pkgPath) =>
+                    typeId: 'FUGR/F',
+                    xml: (n, pkg, desc, resp, typeId) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<funcgrp:abapFunctionGroup xmlns:adtcore="http://www.sap.com/adt/core" xmlns:funcgrp="http://www.sap.com/adt/functions/groups"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
-                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
+                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
                         `</funcgrp:abapFunctionGroup>`
                 },
                 'DEVC': {
                     uri: 'packages',
                     contentType: 'application/vnd.sap.adt.packages.v1+xml',
-                    xml: (n, pkg, desc, resp, pkgPath) =>
+                    typeId: 'DEVC/K',
+                    xml: (n, pkg, desc, resp, typeId) =>
                         `<?xml version="1.0" encoding="utf-8"?>\n` +
                         `<pak:package xmlns:adtcore="http://www.sap.com/adt/core" xmlns:pak="http://www.sap.com/adt/packages"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
-                        (pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : '') +
+                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
+                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
                         `</pak:package>`
                 }
             };
@@ -345,39 +350,7 @@ cds.on('bootstrap', (app) => {
             const cleanDesc = (description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
             const cleanResp = (responsible || logonName || 'DEVELOPER').toUpperCase();
 
-            // Fetch actual parentPath via ADT search if missing
-            let actualParentPath = parentPath;
-            if (!actualParentPath && cleanPkg && process.env.NODE_ENV === 'production') {
-                try {
-                    const searchUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(cleanPkg)}&maxResults=10&objectType=DEVC%2FK`;
-                    const searchResp = await callAdt(destinationName, jwt, {
-                        method: 'GET',
-                        url: searchUrl,
-                        headers: { 'Accept': 'application/xml' }
-                    });
-                    const xml = typeof searchResp.data === 'string' ? searchResp.data : JSON.stringify(searchResp.data);
-                    
-                    const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
-                    const namePattern = /adtcore:name="([^"]+)"/i;
-                    const uriPattern = /adtcore:uri="([^"]*)"/i;
-                    let match;
-                    while ((match = refPattern.exec(xml)) !== null) {
-                        const tag = match[0];
-                        const mName = (namePattern.exec(tag) || [])[1];
-                        if (mName && mName.toUpperCase() === cleanPkg) {
-                            actualParentPath = (uriPattern.exec(tag) || [])[1];
-                            break;
-                        }
-                    }
-                    if (actualParentPath) {
-                        console.log(`[adt/create-object] resolved parentPath for ${cleanPkg}: ${actualParentPath}`);
-                    }
-                } catch (e) {
-                    console.warn(`[adt/create-object] Failed to resolve parentPath for ${cleanPkg}:`, e.message);
-                }
-            }
-
-            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp, actualParentPath || '');
+            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp, cfg.typeId);
             console.log(`[adt/create-object] xmlBody: ${xmlBody}`);
 
             // Append transport number if provided
