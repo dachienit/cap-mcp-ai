@@ -279,7 +279,10 @@ cds.on('bootstrap', (app) => {
 
                 if (pkgFound) {
                     // 2. Get all objects in package
-                    const contentsUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=*&packageName=${encodeURIComponent(query)}&maxResults=200`;
+                    let limit = parseInt(maxResults, 10);
+                    if (isNaN(limit) || limit < 1) limit = 50;
+                    
+                    const contentsUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=*&packageName=${encodeURIComponent(query)}&maxResults=${limit}`;
                     const contentsResp = await callAdt(destinationName, jwt, {
                         method: 'GET',
                         url: contentsUrl,

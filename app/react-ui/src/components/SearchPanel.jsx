@@ -17,12 +17,16 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     // ── Object Search state
     const [objQuery, setObjQuery] = useState('');
     const [objType, setObjType] = useState('');
+    const [objMaxResults, setObjMaxResults] = useState(50);
+    const [objFilterText, setObjFilterText] = useState('');
     const [objResults, setObjResults] = useState(null);
     const [objLoading, setObjLoading] = useState(false);
     const [selectedObj, setSelectedObj] = useState(null);
 
     // ── Package Search state
     const [pkgQuery, setPkgQuery] = useState('');
+    const [pkgMaxResults, setPkgMaxResults] = useState(200);
+    const [pkgFilterText, setPkgFilterText] = useState('');
     const [pkgResults, setPkgResults] = useState(null);
     const [pkgLoading, setPkgLoading] = useState(false);
     const [selectedPkgObj, setSelectedPkgObj] = useState(null);
@@ -30,9 +34,10 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     // ── Search Objects
     const handleSearchObj = async () => {
         if (!objQuery.trim()) { addToast('Please enter a search term', 'warning'); return; }
-        setObjLoading(true); setObjResults(null); setSelectedObj(null);
+        setObjLoading(true); setObjResults(null); setSelectedObj(null); setObjFilterText('');
         try {
-            const result = await searchObject(destinationName, objQuery.trim(), objType);
+            const limit = parseInt(objMaxResults, 10) || 50;
+            const result = await searchObject(destinationName, objQuery.trim(), objType, limit);
             setObjResults(result.data || []);
             if (!result.data?.length) addToast('No objects found', 'info');
         } catch (e) {
@@ -43,9 +48,10 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     // ── Search Packages
     const handleSearchPkg = async () => {
         if (!pkgQuery.trim()) { addToast('Please enter a search term', 'warning'); return; }
-        setPkgLoading(true); setPkgResults(null); setSelectedPkgObj(null);
+        setPkgLoading(true); setPkgResults(null); setSelectedPkgObj(null); setPkgFilterText('');
         try {
-            const result = await searchPackage(destinationName, pkgQuery.trim());
+            const limit = parseInt(pkgMaxResults, 10) || 200;
+            const result = await searchPackage(destinationName, pkgQuery.trim(), limit);
             setPkgResults(result.data || []);
             if (!result.data?.length) addToast('No packages found', 'info');
         } catch (e) {
@@ -54,6 +60,21 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
     };
 
     const handleKeyDown = (e, fn) => { if (e.key === 'Enter') fn(); };
+
+    // ── Filter Data
+    const filterData = (data, filterText) => {
+        if (!data) return null;
+        if (!filterText) return data;
+        const lowFilter = filterText.toLowerCase();
+        return data.filter(item => 
+            (item.name || '').toLowerCase().includes(lowFilter) ||
+            (item.description || '').toLowerCase().includes(lowFilter) ||
+            (item.type || '').toLowerCase().includes(lowFilter)
+        );
+    };
+
+    const filteredObjResults = filterData(objResults, objFilterText);
+    const filteredPkgResults = filterData(pkgResults, pkgFilterText);
 
     return (
         <div className="panel">
@@ -86,6 +107,17 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                             {OBJECT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                         </select>
                     </div>
+                    <div className="form-group" style={{ flex: '0 0 auto', width: '90px' }}>
+                        <label className="form-label" title="Maximum results to fetch from ADT">Max Results</label>
+                        <input
+                            type="number"
+                            className="form-input"
+                            value={objMaxResults}
+                            onChange={e => setObjMaxResults(e.target.value)}
+                            min="1"
+                            max="5000"
+                        />
+                    </div>
                     <div className="form-group" style={{ flex: '0 0 auto' }}>
                         <label className="form-label">&nbsp;</label>
                         <button
@@ -109,11 +141,21 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
 
                 {objResults && objResults.length > 0 && (
                     <>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'var(--space-4)' }}>
-                            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                                {objResults.length} result{objResults.length !== 1 ? 's' : ''}
-                                {selectedObj ? ' — 1 selected' : ''}
-                            </span>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'var(--space-4)', gap: '1rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+                                <input
+                                    type="text"
+                                    className="form-input"
+                                    placeholder="Filter results..."
+                                    value={objFilterText}
+                                    onChange={e => setObjFilterText(e.target.value)}
+                                    style={{ maxWidth: '250px', padding: '0.3rem 0.6rem', fontSize: '13px' }}
+                                />
+                                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                    Showing {filteredObjResults.length} / {objResults.length}
+                                    {selectedObj ? ' — 1 selected' : ''}
+                                </span>
+                            </div>
                             {selectedObj && (
                                 <button
                                     className="btn btn-primary btn-sm"
@@ -135,7 +177,9 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {objResults.map((obj, i) => (
+                                    {filteredObjResults.length === 0 ? (
+                                        <tr><td colSpan="4" style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)' }}>No matches for filter</td></tr>
+                                    ) : filteredObjResults.map((obj, i) => (
                                         <tr
                                             key={i}
                                             className={selectedObj === obj ? 'selected' : ''}
@@ -180,6 +224,17 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                             onKeyDown={e => handleKeyDown(e, handleSearchPkg)}
                         />
                     </div>
+                    <div className="form-group" style={{ flex: '0 0 auto', width: '90px' }}>
+                        <label className="form-label" title="Maximum results to fetch from ADT">Max Results</label>
+                        <input
+                            type="number"
+                            className="form-input"
+                            value={pkgMaxResults}
+                            onChange={e => setPkgMaxResults(e.target.value)}
+                            min="1"
+                            max="5000"
+                        />
+                    </div>
                     <div className="form-group" style={{ flex: '0 0 auto' }}>
                         <label className="form-label">&nbsp;</label>
                         <button
@@ -202,11 +257,21 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
 
                 {pkgResults && pkgResults.length > 0 && (
                     <>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'var(--space-4)' }}>
-                            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                                {pkgResults.length} result{pkgResults.length !== 1 ? 's' : ''}
-                                {selectedPkgObj ? ' — 1 selected' : ''}
-                            </span>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'var(--space-4)', gap: '1rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+                                <input
+                                    type="text"
+                                    className="form-input"
+                                    placeholder="Filter results..."
+                                    value={pkgFilterText}
+                                    onChange={e => setPkgFilterText(e.target.value)}
+                                    style={{ maxWidth: '250px', padding: '0.3rem 0.6rem', fontSize: '13px' }}
+                                />
+                                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                    Showing {filteredPkgResults.length} / {pkgResults.length}
+                                    {selectedPkgObj ? ' — 1 selected' : ''}
+                                </span>
+                            </div>
                             {selectedPkgObj && (
                                 <button
                                     className="btn btn-purple btn-sm"
@@ -228,7 +293,9 @@ export default function SearchPanel({ destinationName, onSelectObject, addToast 
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {pkgResults.map((pkg, i) => {
+                                    {filteredPkgResults.length === 0 ? (
+                                        <tr><td colSpan="4" style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)' }}>No matches for filter</td></tr>
+                                    ) : filteredPkgResults.map((pkg, i) => {
                                         const isSelectable = pkg.type !== 'DEVC';
                                         return (
                                             <tr 
