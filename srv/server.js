@@ -278,7 +278,7 @@ cds.on('bootstrap', (app) => {
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url,
-                headers: { 'Accept': 'application/xml' }
+                headers: { 'Accept': 'application/vnd.sap.adt.repository.trproperties.result.v1+xml' }
             });
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
