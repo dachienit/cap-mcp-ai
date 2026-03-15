@@ -1,65 +1,23 @@
 
 'use strict';
 
-const axios  = require('axios');
-const https  = require('https');
-const http   = require('http');
-
-// Shared keep-alive agents — encourage TCP connection reuse across calls
-const HTTP_AGENT  = new http.Agent({ keepAlive: true, maxSockets: 4 });
-const HTTPS_AGENT = new https.Agent({ keepAlive: true, maxSockets: 4, rejectUnauthorized: false });
+/**
+ * ADT Save Source — Full stateful flow using @sap-cloud-sdk/http-client
+ *
+ * Uses executeHttpRequest (same as all other working ADT endpoints in server.js)
+ * to avoid BTP Cloud Connector proxy rejection caused by raw axios.
+ *
+ * Session affinity (required for ABAP lock) is maintained by:
+ *   - Extracting Set-Cookie from each response
+ *   - Forwarding the session cookie as a Cookie header in subsequent requests
+ *
+ * Flow: CSRF fetch → LOCK → SET SOURCE → UNLOCK
+ */
 
 const ADT_BASE = '/sap/bc/adt';
 
 /**
- * Build an axios client that routes via Cloud Connector proxy.
- *
- * @param {string} destName      - BTP destination name (e.g. T4X_011)
- * @param {string} userJwt       - User's Bearer JWT (for Principal Propagation)
- * @returns {Promise<{client: AxiosInstance, destUrl: string}>}
- */
-async function buildAdtAxiosClient(destName, userJwt) {
-    const { getDestination } = require('@sap-cloud-sdk/connectivity');
-
-    const dest = await getDestination({ destinationName: destName, jwt: userJwt });
-    if (!dest) throw new Error(`Destination '${destName}' not found`);
-
-    const proxyConf = dest.proxyConfiguration;
-    const destUrl   = dest.url || '';
-
-    // Build axios base config
-    const clientConfig = {
-        baseURL:    destUrl,
-        httpAgent:  HTTP_AGENT,
-        httpsAgent: HTTPS_AGENT,
-        // Disable axios follow-redirects (we handle manually if needed)
-        maxRedirects: 0,
-        validateStatus: (s) => s < 500,  // handle 4xx ourselves
-        headers: {
-            // Principal Propagation: CC exchanges this JWT for a PP certificate
-            'Authorization': `Bearer ${userJwt}`,
-        }
-    };
-
-    // Set CC proxy if available
-    if (proxyConf) {
-        clientConfig.proxy = {
-            host:     proxyConf.host,
-            port:     parseInt(proxyConf.port, 10),
-            protocol: proxyConf.protocol || 'http'
-        };
-        // Proxy-Authorization authenticates our BTP app to the CC proxy
-        if (proxyConf.headers?.['Proxy-Authorization']) {
-            clientConfig.headers['Proxy-Authorization'] = proxyConf.headers['Proxy-Authorization'];
-        }
-    }
-
-    const client = axios.create(clientConfig);
-    return { client, destUrl };
-}
-
-/**
- * Parse Set-Cookie response header into a Cookie request string.
+ * Parse Set-Cookie header(s) into a Cookie request string.
  * Extracts only name=value pairs (strips Path, Domain, Max-Age, etc.)
  */
 function parseCookies(setCookieHeader) {
@@ -69,34 +27,59 @@ function parseCookies(setCookieHeader) {
 }
 
 /**
- * Throw an error with ABAP downstream info for proper error handling.
+ * Merge cookie strings, deduplicating by cookie name (later wins).
  */
-function throwAdtError(axiosResponse, step) {
-    const body = typeof axiosResponse.data === 'string'
-        ? axiosResponse.data
-        : JSON.stringify(axiosResponse.data);
+function mergeCookies(existing, incoming) {
+    if (!incoming) return existing;
+    if (!existing) return incoming;
 
-    const err = new Error(`ADT ${step} failed: HTTP ${axiosResponse.status}`);
-    err.downstreamStatus = axiosResponse.status;
-    err.downstreamBody   = body;
-    throw err;
+    const map = new Map();
+    for (const part of (existing + '; ' + incoming).split('; ')) {
+        const [name] = part.split('=');
+        if (name && name.trim()) map.set(name.trim(), part.trim());
+    }
+    return [...map.values()].join('; ');
 }
 
 /**
- * Full stateful save-source operation in a single axios session:
- *   1. CSRF fetch  → establishes ABAP session (cookie)
- *   2. Lock        → same session → lock tied to session
- *   3. Set-source  → same session → lockHandle valid
- *   4. Unlock      → same session → release lock
+ * Execute an HTTP request via SAP Cloud SDK (BTP Cloud Connector compatible).
+ * Wraps executeHttpRequest and extracts useful response info.
+ *
+ * @param {string} destName
+ * @param {string} jwt
+ * @param {object} options   - { method, url, headers, data }
+ * @returns {Promise<{status, headers, data}>}
+ */
+async function sdkRequest(destName, jwt, options) {
+    const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
+    const resp = await executeHttpRequest(
+        { destinationName: destName, jwt },
+        options
+    );
+    return {
+        status:  resp.status,
+        headers: resp.headers || {},
+        data:    resp.data
+    };
+}
+
+/**
+ * Full stateful save-source operation:
+ *   1. CSRF fetch  (HEAD on objectUrl — lightweight, returns x-csrf-token)
+ *   2. Lock        (POST objectUrl?_action=LOCK)
+ *   3. Set-source  (PUT sourceUrl?lockHandle=...)
+ *   4. Unlock      (POST objectUrl?_action=UNLOCK)
+ *
+ * Session cookie is forwarded between steps to keep ABAP session alive.
  *
  * @param {object} opts
- * @param {string} opts.destName     - BTP destination name
- * @param {string} opts.userJwt      - User Bearer JWT
- * @param {string} opts.objectUrl    - ADT object URI
- * @param {string} opts.sourceUrl    - ADT source URL (or objectUrl/source/main)
+ * @param {string} opts.destName     - BTP destination name (e.g. T4X_011)
+ * @param {string} opts.userJwt      - User Bearer JWT (Principal Propagation)
+ * @param {string} opts.objectUrl    - ADT object URI  (e.g. /sap/bc/adt/oo/classes/zcl_xxx)
+ * @param {string} opts.sourceUrl    - ADT source URL  (e.g. objectUrl/source/main)
  * @param {string} opts.source       - ABAP source code to save
  * @param {string} [opts.transport]  - Transport request number (optional)
- * @param {Function} opts.log        - Logging function (msg => void)
+ * @param {Function} opts.log        - Logging function
  */
 async function adtSaveSource({
     destName,
@@ -107,178 +90,168 @@ async function adtSaveSource({
     transport,
     log
 }) {
+    log = log || console.log;
 
-    log = log || console.log
+    const connectionId = require('crypto').randomUUID().replace(/-/g, '');
 
-    const { client, destUrl } = await buildAdtAxiosClient(destName, userJwt)
+    log(`\n========= ADT SAVE SOURCE FLOW =========`);
+    log(`[ADT] dest=${destName}`);
+    log(`[ADT] object=${objectUrl}`);
+    log(`[ADT] source=${sourceUrl}`);
+    log(`[ADT] connectionId=${connectionId}`);
 
-    let sessionCookie = ''
-    let csrfToken = ''
-    let lockHandle = ''
-    let connectionId = require('crypto').randomUUID().replace(/-/g,'')
-
-    log(`\n========= ADT SAVE SOURCE FLOW =========`)
-    log(`[ADT] dest=${destUrl}`)
-    log(`[ADT] object=${objectUrl}`)
-    log(`[ADT] source=${sourceUrl}`)
-    log(`[ADT] connectionId=${connectionId}`)
+    let sessionCookie = '';
+    let csrfToken     = '';
+    let lockHandle    = '';
 
     // -------------------------------------------------
-    // STEP 1 — CSRF
-    // Use a HEAD request on the objectUrl (lightweight — no body transfer).
-    // Avoids hitting the heavy /core/discovery endpoint which can timeout (503)
-    // on ABAP systems with many installed packages.
+    // STEP 1 — CSRF fetch
+    // HEAD request on the objectUrl: very lightweight (no body).
+    // Uses executeHttpRequest so BTP Cloud Connector proxy handles auth correctly.
     // -------------------------------------------------
 
-    log(`\n[STEP1] CSRF fetch`)
+    log(`\n[STEP1] CSRF fetch (HEAD on objectUrl)`);
 
-    const csrfResp = await client.head(objectUrl, {
-        headers: {
-            'X-CSRF-Token': 'Fetch',
-            'sap-adt-connection-id': connectionId,
-            'User-Agent': 'Eclipse/4.37.0 ADT/3.52.0'
-        }
-    })
-
-    csrfToken = csrfResp.headers['x-csrf-token'] || ''
-
-    // NOTE: We do NOT pass cookies manually. The BTP Cloud Connector maintains
-    // the HTTP session transparently via the keep-alive TCP connection (shared
-    // axios client). Forwarding cookies across proxy hops causes session
-    // mismatches that result in "invalid lock handle" (423) errors.
-    sessionCookie = parseCookies(csrfResp.headers['set-cookie'])
-
-    log(`[STEP1] status=${csrfResp.status}`)
-    log(`[STEP1] csrfToken=${csrfToken?.substring(0,12)}`)
-    log(`[STEP1] headers=${JSON.stringify(csrfResp.headers,null,2)}`)
-
-    if (!csrfToken) {
-        // Fallback: if HEAD doesn't return a CSRF token, try GET on objectUrl
-        log(`[STEP1] HEAD did not return CSRF token, falling back to GET`)
-        const csrfFallback = await client.get(objectUrl, {
+    let csrfResp;
+    try {
+        csrfResp = await sdkRequest(destName, userJwt, {
+            method: 'HEAD',
+            url: objectUrl,
             headers: {
-                'X-CSRF-Token': 'Fetch',
-                'Accept': 'application/xml, application/vnd.sap.adt.core.objectstructure+xml',
+                'X-CSRF-Token':          'Fetch',
                 'sap-adt-connection-id': connectionId,
-                'User-Agent': 'Eclipse/4.37.0 ADT/3.52.0'
+                'User-Agent':            'Eclipse/4.37.0 ADT/3.52.0'
             }
-        })
-        csrfToken = csrfFallback.headers['x-csrf-token'] || ''
-        sessionCookie = parseCookies(csrfFallback.headers['set-cookie'])
-        log(`[STEP1] fallback status=${csrfFallback.status}, csrfToken=${csrfToken?.substring(0,12)}`)
+        });
+    } catch (headErr) {
+        log(`[STEP1] HEAD failed (${headErr.message}), falling back to GET`);
+        csrfResp = await sdkRequest(destName, userJwt, {
+            method: 'GET',
+            url: objectUrl,
+            headers: {
+                'X-CSRF-Token':          'Fetch',
+                'Accept':                'application/xml, application/vnd.sap.adt.core.objectstructure+xml',
+                'sap-adt-connection-id': connectionId,
+                'User-Agent':            'Eclipse/4.37.0 ADT/3.52.0'
+            }
+        });
     }
 
+    csrfToken     = csrfResp.headers['x-csrf-token'] || '';
+    sessionCookie = parseCookies(csrfResp.headers['set-cookie']);
+
+    log(`[STEP1] status=${csrfResp.status}`);
+    log(`[STEP1] csrfToken=${csrfToken?.substring(0, 12)}`);
+    log(`[STEP1] cookie=${sessionCookie}`);
+
     if (!csrfToken) {
-        throw new Error('CSRF token missing — HEAD and GET on objectUrl both failed to return x-csrf-token')
+        throw new Error(`CSRF token missing — HEAD/GET on ${objectUrl} did not return x-csrf-token (status=${csrfResp.status})`);
     }
 
     // -------------------------------------------------
     // STEP 2 — LOCK
     // -------------------------------------------------
 
-    log(`\n[STEP2] LOCK object`)
+    log(`\n[STEP2] LOCK object`);
 
-    const lockResp = await client.post(
-        `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
-        null,
-        {
-            headers: {
-                'X-CSRF-Token': csrfToken,
-                'Cookie': sessionCookie,
-                'Accept':
-                    'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9',
-                'sap-adt-connection-id': connectionId
-            }
-        }
-    )
+    const lockHeaders = {
+        'X-CSRF-Token':          csrfToken,
+        'Accept':                'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9',
+        'sap-adt-connection-id': connectionId
+    };
+    if (sessionCookie) lockHeaders['Cookie'] = sessionCookie;
 
-    log(`[STEP2] status=${lockResp.status}`)
-    log(`[STEP2] headers=${JSON.stringify(lockResp.headers,null,2)}`)
+    const lockResp = await sdkRequest(destName, userJwt, {
+        method:  'POST',
+        url:     `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
+        headers: lockHeaders
+    });
 
-    const lockXml = lockResp.data
+    log(`[STEP2] status=${lockResp.status}`);
+
+    const lockCookie = parseCookies(lockResp.headers['set-cookie']);
+    if (lockCookie) {
+        sessionCookie = mergeCookies(sessionCookie, lockCookie);
+        log(`[STEP2] cookie updated from lock response`);
+    }
+
+    const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
 
     const m =
         /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i.exec(lockXml) ||
-        /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i.exec(lockXml)
+        /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i.exec(lockXml) ||
+        /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i.exec(lockXml);
 
     if (!m) {
-        log(`[STEP2] lock xml=${lockXml}`)
-        throw new Error("LOCK_HANDLE not found")
+        log(`[STEP2] lock xml=${lockXml}`);
+        throw new Error('LOCK_HANDLE not found in lock response');
     }
 
-    lockHandle = m[1]
-
-    log(`[STEP2] lockHandle=${lockHandle}`)
-
-    const lockCookie = parseCookies(lockResp.headers['set-cookie'])
-
-    if (lockCookie) {
-        sessionCookie = lockCookie
-        log(`[STEP2] cookie replaced with lock cookie`)
-    }
+    lockHandle = m[1].trim();
+    log(`[STEP2] lockHandle=${lockHandle}`);
 
     // -------------------------------------------------
     // STEP 3 — SET SOURCE
     // -------------------------------------------------
 
-    log(`\n[STEP3] SET SOURCE`)
+    log(`\n[STEP3] SET SOURCE`);
 
-    let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`
-
+    let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
     if (transport) {
-        putUrl += `&corrNr=${encodeURIComponent(transport)}`
+        putUrl += `&corrNr=${encodeURIComponent(transport)}`;
     }
+    log(`[STEP3] PUT url=${putUrl}`);
 
-    log(`[STEP3] PUT url=${putUrl}`)
+    const putHeaders = {
+        'X-CSRF-Token':          csrfToken,
+        'Content-Type':          'text/plain; charset=utf-8',
+        'Accept':                'text/plain',
+        'sap-adt-connection-id': connectionId
+    };
+    if (sessionCookie) putHeaders['Cookie'] = sessionCookie;
 
-    const putResp = await client.put(
-        putUrl,
-        source,
-        {
-            headers: {
-                'X-CSRF-Token': csrfToken,
-                'Cookie': sessionCookie,
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Accept': 'text/plain',
-                'sap-adt-connection-id': connectionId
-            }
-        }
-    )
+    const putResp = await sdkRequest(destName, userJwt, {
+        method:  'PUT',
+        url:     putUrl,
+        headers: putHeaders,
+        data:    source
+    });
 
-    log(`[STEP3] status=${putResp.status}`)
-    log(`[STEP3] headers=${JSON.stringify(putResp.headers,null,2)}`)
+    log(`[STEP3] status=${putResp.status}`);
+
+    const putCookie = parseCookies(putResp.headers['set-cookie']);
+    if (putCookie) sessionCookie = mergeCookies(sessionCookie, putCookie);
 
     if (putResp.status >= 400) {
-        throwAdtError(putResp, 'set-source')
+        const body = typeof putResp.data === 'string' ? putResp.data : JSON.stringify(putResp.data);
+        const err  = new Error(`ADT set-source failed: HTTP ${putResp.status}`);
+        err.downstreamStatus = putResp.status;
+        err.downstreamBody   = body;
+        throw err;
     }
 
     // -------------------------------------------------
     // STEP 4 — UNLOCK
     // -------------------------------------------------
 
-    log(`\n[STEP4] UNLOCK`)
+    log(`\n[STEP4] UNLOCK`);
 
-    const unlockResp = await client.post(
-        `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-        null,
-        {
-            headers: {
-                'X-CSRF-Token': csrfToken,
-                'Cookie': sessionCookie,
-                'sap-adt-connection-id': connectionId
-            }
-        }
-    )
+    const unlockHeaders = {
+        'X-CSRF-Token':          csrfToken,
+        'sap-adt-connection-id': connectionId
+    };
+    if (sessionCookie) unlockHeaders['Cookie'] = sessionCookie;
 
-    log(`[STEP4] status=${unlockResp.status}`)
-    log(`[STEP4] headers=${JSON.stringify(unlockResp.headers,null,2)}`)
+    const unlockResp = await sdkRequest(destName, userJwt, {
+        method:  'POST',
+        url:     `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        headers: unlockHeaders
+    });
 
-    log(`\n========= ADT FLOW DONE =========\n`)
+    log(`[STEP4] status=${unlockResp.status}`);
+    log(`\n========= ADT FLOW DONE =========\n`);
 
-    return {
-        lockHandle,
-        sourceUrl
-    }
+    return { lockHandle, sourceUrl };
 }
 
-module.exports = { adtSaveSource, buildAdtAxiosClient };
+module.exports = { adtSaveSource };
