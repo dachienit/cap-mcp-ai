@@ -98,89 +98,165 @@ function throwAdtError(axiosResponse, step) {
  * @param {string} [opts.transport]  - Transport request number (optional)
  * @param {Function} opts.log        - Logging function (msg => void)
  */
-async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, transport, log }) {
-    log = log || console.log;
+async function adtSaveSource({
+    destName,
+    userJwt,
+    objectUrl,
+    sourceUrl,
+    source,
+    transport,
+    log
+}) {
 
-    const { client } = await buildAdtAxiosClient(destName, userJwt);
+    log = log || console.log
 
-    let sessionCookie = '';
-    let lockHandle    = '';
+    const { client, destUrl } = await buildAdtAxiosClient(destName, userJwt)
 
-    // ── Step 1: CSRF fetch (establishes ABAP session, returns cookie + csrf token)
+    let sessionCookie = ''
+    let csrfToken = ''
+    let lockHandle = ''
+    let connectionId = require('crypto').randomUUID().replace(/-/g,'')
+
+    log(`\n========= ADT SAVE SOURCE FLOW =========`)
+    log(`[ADT] dest=${destUrl}`)
+    log(`[ADT] object=${objectUrl}`)
+    log(`[ADT] source=${sourceUrl}`)
+    log(`[ADT] connectionId=${connectionId}`)
+
+    // -------------------------------------------------
+    // STEP 1 — CSRF
+    // -------------------------------------------------
+
+    log(`\n[STEP1] CSRF fetch`)
+
     const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
         headers: {
             'X-CSRF-Token': 'Fetch',
-            'Accept':       'application/atomsvc+xml, application/xml, */*'
+            'Accept': 'application/xml',
+            'sap-adt-connection-id': connectionId,
+            'User-Agent': 'Eclipse/4.37.0 ADT/3.52.0'
         }
-    });
-    const csrfToken = csrfResp.headers['x-csrf-token'] || '';
-    sessionCookie   = parseCookies(csrfResp.headers['set-cookie']);
-    log(`[adtSession] step1/csrf token=${csrfToken?.substring(0, 10)}, cookie_len=${sessionCookie.length}`);
+    })
 
-    if (!csrfToken) throw Object.assign(
-        new Error('CSRF fetch did not return a token'),
-        { downstreamStatus: 500 }
-    );
+    csrfToken = csrfResp.headers['x-csrf-token'] || ''
+    sessionCookie = parseCookies(csrfResp.headers['set-cookie'])
 
-    // ── Step 2: Lock (send session cookie → ABAP uses same session → lock in that session)
+    log(`[STEP1] status=${csrfResp.status}`)
+    log(`[STEP1] csrfToken=${csrfToken?.substring(0,12)}`)
+    log(`[STEP1] cookie=${sessionCookie}`)
+    log(`[STEP1] headers=${JSON.stringify(csrfResp.headers,null,2)}`)
+
+    if (!csrfToken) {
+        throw new Error('CSRF token missing')
+    }
+
+    // -------------------------------------------------
+    // STEP 2 — LOCK
+    // -------------------------------------------------
+
+    log(`\n[STEP2] LOCK object`)
+
     const lockResp = await client.post(
         `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
         null,
-        { headers: { 'X-CSRF-Token': csrfToken, 'Cookie': sessionCookie, 'Accept': '*/*' } }
-    );
-    if (lockResp.status >= 400) throwAdtError(lockResp, 'lock');
-
-    const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
-    log(`[adtSession] step2/lock xml: ${lockXml.substring(0, 200)}`);
-
-    for (const p of [
-        /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i,
-        /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i,
-        /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i
-    ]) {
-        const m = p.exec(lockXml);
-        if (m) { lockHandle = m[1].trim(); break; }
-    }
-    if (!lockHandle && lockXml.length < 200 && !lockXml.includes('<')) lockHandle = lockXml.trim();
-    if (!lockHandle) throw Object.assign(new Error('Could not parse lockHandle from ABAP response'), { downstreamStatus: 500 });
-
-    // Prefer any new cookie from lock response (if ABAP issued one)
-    const lockCookie = parseCookies(lockResp.headers['set-cookie']);
-    if (lockCookie) sessionCookie = lockCookie;
-    log(`[adtSession] step2/locked handle=${lockHandle}, cookie_len=${sessionCookie.length}`);
-
-    // ── Step 3: Set source (same session cookie → ABAP finds lock in same session)
-    let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
-    if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
-
-    const putResp = await client.put(putUrl, source, {
-        headers: {
-            'X-CSRF-Token': csrfToken,
-            'Cookie':       sessionCookie,
-            'Content-Type': 'text/plain; charset=utf-8'
+        {
+            headers: {
+                'X-CSRF-Token': csrfToken,
+                'Cookie': sessionCookie,
+                'Accept':
+                    'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9',
+                'sap-adt-connection-id': connectionId
+            }
         }
-    });
+    )
+
+    log(`[STEP2] status=${lockResp.status}`)
+    log(`[STEP2] headers=${JSON.stringify(lockResp.headers,null,2)}`)
+
+    const lockXml = lockResp.data
+
+    const m =
+        /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i.exec(lockXml) ||
+        /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i.exec(lockXml)
+
+    if (!m) {
+        log(`[STEP2] lock xml=${lockXml}`)
+        throw new Error("LOCK_HANDLE not found")
+    }
+
+    lockHandle = m[1]
+
+    log(`[STEP2] lockHandle=${lockHandle}`)
+
+    const lockCookie = parseCookies(lockResp.headers['set-cookie'])
+
+    if (lockCookie) {
+        sessionCookie = lockCookie
+        log(`[STEP2] cookie replaced with lock cookie`)
+    }
+
+    // -------------------------------------------------
+    // STEP 3 — SET SOURCE
+    // -------------------------------------------------
+
+    log(`\n[STEP3] SET SOURCE`)
+
+    let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`
+
+    if (transport) {
+        putUrl += `&corrNr=${encodeURIComponent(transport)}`
+    }
+
+    log(`[STEP3] PUT url=${putUrl}`)
+
+    const putResp = await client.put(
+        putUrl,
+        source,
+        {
+            headers: {
+                'X-CSRF-Token': csrfToken,
+                'Cookie': sessionCookie,
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Accept': 'text/plain',
+                'sap-adt-connection-id': connectionId
+            }
+        }
+    )
+
+    log(`[STEP3] status=${putResp.status}`)
+    log(`[STEP3] headers=${JSON.stringify(putResp.headers,null,2)}`)
+
     if (putResp.status >= 400) {
-        // Try to cleanup before throwing
-        await client.delete(
-            `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-            { headers: { 'X-CSRF-Token': csrfToken, 'Cookie': sessionCookie } }
-        ).catch(e => log(`[adtSession] cleanup unlock failed: ${e.message}`));
-        throwAdtError(putResp, 'set-source');
+        throwAdtError(putResp, 'set-source')
     }
-    log(`[adtSession] step3/source saved to ${sourceUrl}`);
 
-    // ── Step 4: Unlock
-    const unlockResp = await client.delete(
+    // -------------------------------------------------
+    // STEP 4 — UNLOCK
+    // -------------------------------------------------
+
+    log(`\n[STEP4] UNLOCK`)
+
+    const unlockResp = await client.post(
         `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-        { headers: { 'X-CSRF-Token': csrfToken, 'Cookie': sessionCookie } }
-    );
-    if (unlockResp.status >= 400) {
-        log(`[adtSession] unlock returned HTTP ${unlockResp.status} (non-fatal)`);
-    }
-    log(`[adtSession] step4/unlocked`);
+        null,
+        {
+            headers: {
+                'X-CSRF-Token': csrfToken,
+                'Cookie': sessionCookie,
+                'sap-adt-connection-id': connectionId
+            }
+        }
+    )
 
-    return { lockHandle, sourceUrl };
+    log(`[STEP4] status=${unlockResp.status}`)
+    log(`[STEP4] headers=${JSON.stringify(unlockResp.headers,null,2)}`)
+
+    log(`\n========= ADT FLOW DONE =========\n`)
+
+    return {
+        lockHandle,
+        sourceUrl
+    }
 }
 
 module.exports = { adtSaveSource, buildAdtAxiosClient };
