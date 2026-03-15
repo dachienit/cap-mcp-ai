@@ -52,9 +52,14 @@ function mergeCookies(existing, incoming) {
  */
 async function sdkRequest(destName, jwt, options) {
     const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
+    // validateStatus: always pass so we can inspect 4xx bodies (don't throw)
+    const mergedOptions = {
+        ...options,
+        validateStatus: () => true
+    };
     const resp = await executeHttpRequest(
         { destinationName: destName, jwt },
-        options
+        mergedOptions
     );
     return {
         status:  resp.status,
@@ -206,6 +211,9 @@ async function adtSaveSource({
     };
     if (sessionCookie) putHeaders['Cookie'] = sessionCookie;
 
+    log(`[STEP3] sending Cookie=${sessionCookie?.substring(0, 60)}...`);
+    log(`[STEP3] sending X-CSRF-Token=${csrfToken?.substring(0, 12)}`);
+
     const putResp = await sdkRequest(destName, userJwt, {
         method:  'PUT',
         url:     putUrl,
@@ -214,6 +222,12 @@ async function adtSaveSource({
     });
 
     log(`[STEP3] status=${putResp.status}`);
+    if (putResp.status >= 300) {
+        const body = typeof putResp.data === 'string'
+            ? putResp.data.substring(0, 800)
+            : JSON.stringify(putResp.data).substring(0, 800);
+        log(`[STEP3] ERROR body=${body}`);
+    }
 
     const putCookie = parseCookies(putResp.headers['set-cookie']);
     if (putCookie) sessionCookie = mergeCookies(sessionCookie, putCookie);
