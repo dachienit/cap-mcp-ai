@@ -1,102 +1,107 @@
-
 'use strict';
 
 /**
- * ADT Save Source — Full stateful flow using @sap-cloud-sdk/http-client
+ * ADT Save Source — stateful flow
  *
- * Uses executeHttpRequest (same as all other working ADT endpoints in server.js)
- * to avoid BTP Cloud Connector proxy rejection caused by raw axios.
+ * ROOT CAUSE of 423: executeHttpRequest uses PP auth → ABAP creates NEW session
+ * per request → lock created in session-A is released when that session ends →
+ * PUT arrives in session-B → "not locked (invalid lock handle)".
  *
- * Session affinity (required for ABAP lock) is maintained by:
- *   - Extracting Set-Cookie from each response
- *   - Forwarding the session cookie as a Cookie header in subsequent requests
+ * FIX: Step 1 (CSRF) uses SDK (PP) to establish an ABAP session and get the
+ * MYSAPSSO2 + SAP_SESSIONID cookies. Steps 2-4 (LOCK, PUT, UNLOCK) use raw axios
+ * through the CC proxy with ONLY these SSO cookies for auth (no PP headers).
+ * ABAP reuses the existing session from the cookie → lock stays alive → PUT works.
  *
- * Flow: CSRF fetch → LOCK → SET SOURCE → UNLOCK
+ * Flow:
+ *   STEP 1  GET  /sap/bc/adt/core/discovery   → via SDK (PP) → get CSRF + cookies
+ *   STEP 2  POST objectUrl?_action=LOCK        → via CC proxy (cookie auth, no PP)
+ *   STEP 3  PUT  sourceUrl?lockHandle=...      → via CC proxy (same session)
+ *   STEP 4  POST objectUrl?_action=UNLOCK      → via CC proxy (same session)
  */
 
 const ADT_BASE = '/sap/bc/adt';
 
-/**
- * Parse Set-Cookie header(s) into a Cookie request string.
- * Extracts only name=value pairs (strips Path, Domain, Max-Age, etc.)
- */
+/* ─── helpers ─────────────────────────────────────────────────────────────── */
+
 function parseCookies(setCookieHeader) {
     if (!setCookieHeader) return '';
-    const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-    return cookies.map(c => c.split(';')[0]).join('; ');
+    const list = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+    return list.map(c => c.split(';')[0]).join('; ');
 }
 
-/**
- * Merge cookie strings, deduplicating by cookie name (later wins).
- */
 function mergeCookies(existing, incoming) {
-    if (!incoming) return existing;
+    if (!incoming) return existing || '';
     if (!existing) return incoming;
-
     const map = new Map();
-    for (const part of (existing + '; ' + incoming).split('; ')) {
-        const [name] = part.split('=');
-        if (name && name.trim()) map.set(name.trim(), part.trim());
+    for (const part of `${existing}; ${incoming}`.split('; ')) {
+        const eq = part.indexOf('=');
+        const name = eq >= 0 ? part.substring(0, eq).trim() : part.trim();
+        if (name) map.set(name, part.trim());
     }
     return [...map.values()].join('; ');
 }
 
-/**
- * Execute an HTTP request via SAP Cloud SDK (BTP Cloud Connector compatible).
- * Wraps executeHttpRequest and extracts useful response info.
- *
- * @param {string} destName
- * @param {string} jwt
- * @param {object} options   - { method, url, headers, data }
- * @returns {Promise<{status, headers, data}>}
- */
-async function sdkRequest(destName, jwt, options) {
+/* ─── STEP 1: CSRF via SDK (PP) ───────────────────────────────────────────── */
+
+async function sdkCsrfFetch(destName, jwt, log) {
     const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
-    // validateStatus: always pass so we can inspect 4xx bodies (don't throw)
-    const mergedOptions = {
-        ...options,
-        validateStatus: () => true
-    };
     const resp = await executeHttpRequest(
         { destinationName: destName, jwt },
-        mergedOptions
+        {
+            method: 'GET',
+            url: `${ADT_BASE}/core/discovery`,
+            headers: {
+                'X-CSRF-Token': 'Fetch',
+                'Accept': 'application/atomsvc+xml, application/xml, */*'
+            },
+            validateStatus: () => true
+        }
     );
+    const csrfToken = resp.headers['x-csrf-token'] || '';
+    const sessionCookie = parseCookies(resp.headers['set-cookie']);
+    log(`[STEP1] status=${resp.status}, csrfToken=${csrfToken.substring(0, 12)}`);
+    log(`[STEP1] cookie=${sessionCookie.substring(0, 100)}`);
+    return { csrfToken, sessionCookie };
+}
+
+/* ─── CC proxy config (for raw axios calls WITHOUT PP) ──────────────────── */
+
+async function getCcProxy(destName, jwt, log) {
+    const { getDestination } = require('@sap-cloud-sdk/connectivity');
+    const dest = await getDestination({ destinationName: destName, jwt });
+    const pc = dest.proxyConfiguration || {};
+    log(`[CC] baseURL=${dest.url}, proxy=${pc.host}:${pc.port}`);
     return {
-        status:  resp.status,
-        headers: resp.headers || {},
-        data:    resp.data
+        baseURL: dest.url,
+        proxyHost: pc.host,
+        proxyPort: parseInt(pc.port, 10) || 20003,
+        proxyHeaders: pc.headers || {}   // contains Proxy-Authorization (connectivity JWT)
     };
 }
 
-/**
- * Full stateful save-source operation:
- *   1. CSRF fetch  (HEAD on objectUrl — lightweight, returns x-csrf-token)
- *   2. Lock        (POST objectUrl?_action=LOCK)
- *   3. Set-source  (PUT sourceUrl?lockHandle=...)
- *   4. Unlock      (POST objectUrl?_action=UNLOCK)
- *
- * Session cookie is forwarded between steps to keep ABAP session alive.
- *
- * @param {object} opts
- * @param {string} opts.destName     - BTP destination name (e.g. T4X_011)
- * @param {string} opts.userJwt      - User Bearer JWT (Principal Propagation)
- * @param {string} opts.objectUrl    - ADT object URI  (e.g. /sap/bc/adt/oo/classes/zcl_xxx)
- * @param {string} opts.sourceUrl    - ADT source URL  (e.g. objectUrl/source/main)
- * @param {string} opts.source       - ABAP source code to save
- * @param {string} [opts.transport]  - Transport request number (optional)
- * @param {Function} opts.log        - Logging function
- */
-async function adtSaveSource({
-    destName,
-    userJwt,
-    objectUrl,
-    sourceUrl,
-    source,
-    transport,
-    log
-}) {
-    log = log || console.log;
+/* ─── raw CC call (no PP) ─────────────────────────────────────────────────── */
 
+async function ccCall(cc, { method, path, headers = {}, body }) {
+    const axios = require('axios');
+    // Merge Proxy-Authorization into request headers (Node.js axios recognises it)
+    const reqHeaders = { ...cc.proxyHeaders, ...headers };
+
+    const resp = await axios({
+        method,
+        url: `${cc.baseURL}${path}`,
+        proxy: { host: cc.proxyHost, port: cc.proxyPort },
+        headers: reqHeaders,
+        data: body !== undefined ? body : undefined,
+        validateStatus: () => true,
+        maxRedirects: 0
+    });
+    return { status: resp.status, headers: resp.headers || {}, data: resp.data };
+}
+
+/* ─── main export ─────────────────────────────────────────────────────────── */
+
+async function adtSaveSource({ destName, userJwt, objectUrl, sourceUrl, source, transport, log }) {
+    log = log || console.log;
     const connectionId = require('crypto').randomUUID().replace(/-/g, '');
 
     log(`\n========= ADT SAVE SOURCE FLOW =========`);
@@ -105,157 +110,96 @@ async function adtSaveSource({
     log(`[ADT] source=${sourceUrl}`);
     log(`[ADT] connectionId=${connectionId}`);
 
-    let sessionCookie = '';
-    let csrfToken     = '';
-    let lockHandle    = '';
+    // ── STEP 1: CSRF via SDK (PP) ─────────────────────────────────────────
+    log(`\n[STEP1] CSRF fetch (SDK/PP)`);
+    const { csrfToken, sessionCookie } = await sdkCsrfFetch(destName, userJwt, log);
+    if (!csrfToken) throw new Error(`CSRF token missing from /sap/bc/adt/core/discovery`);
 
-    // -------------------------------------------------
-    // STEP 1 — CSRF fetch
-    // HEAD request on the objectUrl: very lightweight (no body).
-    // Uses executeHttpRequest so BTP Cloud Connector proxy handles auth correctly.
-    // -------------------------------------------------
+    // ── Get CC proxy config ───────────────────────────────────────────────
+    log(`\n[CC] Resolving CC proxy config`);
+    const cc = await getCcProxy(destName, userJwt, log);
 
-    log(`\n[STEP1] CSRF fetch (GET /sap/bc/adt/core/discovery)`);
+    const baseHeaders = {
+        'Cookie': sessionCookie,
+        'X-CSRF-Token': csrfToken,
+        'sap-adt-connection-id': connectionId
+    };
 
-    // Use /sap/bc/adt/core/discovery — same as fetchAdtCsrfToken() in server.js
-    // which is proven to work via executeHttpRequest for activate/create-object.
-    const csrfResp = await sdkRequest(destName, userJwt, {
-        method: 'GET',
-        url:    `${ADT_BASE}/core/discovery`,
+    // ── STEP 2: LOCK via CC proxy (SSO cookie, no PP) ─────────────────────
+    log(`\n[STEP2] LOCK (CC proxy / SSO cookie)`);
+    const lockResp = await ccCall(cc, {
+        method: 'POST',
+        path: `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
         headers: {
-            'X-CSRF-Token': 'Fetch',
-            'Accept':       'application/atomsvc+xml, application/xml, */*'
+            ...baseHeaders,
+            'Accept': 'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8'
         }
     });
 
-    csrfToken     = csrfResp.headers['x-csrf-token'] || '';
-    sessionCookie = parseCookies(csrfResp.headers['set-cookie']);
-
-    log(`[STEP1] status=${csrfResp.status}`);
-    log(`[STEP1] csrfToken=${csrfToken?.substring(0, 12)}`);
-    log(`[STEP1] cookie=${sessionCookie}`);
-
-    if (!csrfToken) {
-        throw new Error(`CSRF token missing — /sap/bc/adt/core/discovery returned status=${csrfResp.status} without x-csrf-token`);
-    }
-
-    // -------------------------------------------------
-    // STEP 2 — LOCK
-    // -------------------------------------------------
-
-    log(`\n[STEP2] LOCK object`);
-
-    const lockHeaders = {
-        'X-CSRF-Token':          csrfToken,
-        'Accept':                'application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result;q=0.8, application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.result2;q=0.9',
-        'sap-adt-connection-id': connectionId
-    };
-    if (sessionCookie) lockHeaders['Cookie'] = sessionCookie;
-
-    const lockResp = await sdkRequest(destName, userJwt, {
-        method:  'POST',
-        url:     `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
-        headers: lockHeaders
-    });
-
     log(`[STEP2] status=${lockResp.status}`);
+    const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
+    log(`[STEP2] xml=${lockXml.substring(0, 400)}`);
 
-    const lockCookie = parseCookies(lockResp.headers['set-cookie']);
-    if (lockCookie) {
-        sessionCookie = mergeCookies(sessionCookie, lockCookie);
-        log(`[STEP2] cookie updated from lock response`);
+    if (lockResp.status >= 400) {
+        const err = new Error(`LOCK failed: HTTP ${lockResp.status}`);
+        err.downstreamStatus = lockResp.status;
+        err.downstreamBody = lockXml.substring(0, 500);
+        throw err;
     }
 
-    const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
-    log(`[STEP2] lock xml (first 500)=${lockXml.substring(0, 500)}`);
+    // Update cookies from lock response if any
+    const lockCookie = parseCookies(lockResp.headers['set-cookie']);
+    const cookieAfterLock = lockCookie ? mergeCookies(sessionCookie, lockCookie) : sessionCookie;
 
-    const m =
+    const mHandle =
         /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i.exec(lockXml) ||
         /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i.exec(lockXml) ||
         /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i.exec(lockXml);
 
-    if (!m) {
-        log(`[STEP2] lock xml=${lockXml}`);
-        throw new Error('LOCK_HANDLE not found in lock response');
-    }
+    if (!mHandle) throw new Error(`LOCK_HANDLE not found in: ${lockXml.substring(0, 200)}`);
+    const lockHandle = mHandle[1].trim();
 
-    lockHandle = m[1].trim();
-    log(`[STEP2] lockHandle=${lockHandle}`);
+    const mCorrNr = /<CORRNR[^>]*>([^<]+)<\/CORRNR>/i.exec(lockXml);
+    const resolvedTransport = transport || (mCorrNr ? mCorrNr[1].trim() : '');
+    log(`[STEP2] lockHandle=${lockHandle}, transport=${resolvedTransport || '(none)'}`);
 
-    // Extract transport number (CORRNR) from lock response.
-    // ADT requires corrNr in the PUT URL for objects in a transport request.
-    // If caller didn't provide one, use the one returned by LOCK.
-    const corrNrMatch = /<CORRNR[^>]*>([^<]+)<\/CORRNR>/i.exec(lockXml);
-    // TODO: remove hardcode after test
-    //const resolvedTransport = transport || (corrNrMatch ? corrNrMatch[1].trim() : '') || 'T4XK903271';
-    const resolvedTransport = 'T4XK903271';
-    log(`[STEP2] corrNr from lock=${corrNrMatch?.[1]?.trim() || '(none)'}, using transport=${resolvedTransport || '(none)'}`);
-
-    // -------------------------------------------------
-    // STEP 3 — SET SOURCE
-    // -------------------------------------------------
-
-    log(`\n[STEP3] SET SOURCE`);
-
+    // ── STEP 3: PUT source via CC proxy ───────────────────────────────────
+    log(`\n[STEP3] SET SOURCE (CC proxy / SSO cookie)`);
     let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
-    if (resolvedTransport) {
-        putUrl += `&corrNr=${encodeURIComponent(resolvedTransport)}`;
-    }
-    log(`[STEP3] PUT url=${putUrl}`);
+    if (resolvedTransport) putUrl += `&corrNr=${encodeURIComponent(resolvedTransport)}`;
+    log(`[STEP3] PUT ${putUrl}`);
 
-    const putHeaders = {
-        'X-CSRF-Token':          csrfToken,
-        'Content-Type':          'text/plain; charset=utf-8',
-        'Accept':                'text/plain',
-        'sap-adt-connection-id': connectionId
-    };
-    if (sessionCookie) putHeaders['Cookie'] = sessionCookie;
-
-    log(`[STEP3] sending Cookie=${sessionCookie?.substring(0, 60)}...`);
-    log(`[STEP3] sending X-CSRF-Token=${csrfToken?.substring(0, 12)}`);
-
-    const putResp = await sdkRequest(destName, userJwt, {
-        method:  'PUT',
-        url:     putUrl,
-        headers: putHeaders,
-        data:    source
+    const putResp = await ccCall(cc, {
+        method: 'PUT',
+        path: putUrl,
+        headers: {
+            ...baseHeaders,
+            'Cookie': cookieAfterLock,
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Accept': 'text/plain'
+        },
+        body: source
     });
 
     log(`[STEP3] status=${putResp.status}`);
-    if (putResp.status >= 300) {
-        const body = typeof putResp.data === 'string'
-            ? putResp.data.substring(0, 800)
-            : JSON.stringify(putResp.data).substring(0, 800);
-        log(`[STEP3] ERROR body=${body}`);
-    }
-
     const putCookie = parseCookies(putResp.headers['set-cookie']);
-    if (putCookie) sessionCookie = mergeCookies(sessionCookie, putCookie);
+    const cookieAfterPut = putCookie ? mergeCookies(cookieAfterLock, putCookie) : cookieAfterLock;
 
     if (putResp.status >= 400) {
         const body = typeof putResp.data === 'string' ? putResp.data : JSON.stringify(putResp.data);
-        const err  = new Error(`ADT set-source failed: HTTP ${putResp.status}`);
+        log(`[STEP3] ERROR body=${body.substring(0, 600)}`);
+        const err = new Error(`set-source failed: HTTP ${putResp.status}`);
         err.downstreamStatus = putResp.status;
-        err.downstreamBody   = body;
+        err.downstreamBody = body;
         throw err;
     }
 
-    // -------------------------------------------------
-    // STEP 4 — UNLOCK
-    // -------------------------------------------------
-
-    log(`\n[STEP4] UNLOCK`);
-
-    const unlockHeaders = {
-        'X-CSRF-Token':          csrfToken,
-        'sap-adt-connection-id': connectionId
-    };
-    if (sessionCookie) unlockHeaders['Cookie'] = sessionCookie;
-
-    const unlockResp = await sdkRequest(destName, userJwt, {
-        method:  'POST',
-        url:     `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-        headers: unlockHeaders
+    // ── STEP 4: UNLOCK via CC proxy ───────────────────────────────────────
+    log(`\n[STEP4] UNLOCK (CC proxy / SSO cookie)`);
+    const unlockResp = await ccCall(cc, {
+        method: 'POST',
+        path: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        headers: { ...baseHeaders, 'Cookie': cookieAfterPut }
     });
 
     log(`[STEP4] status=${unlockResp.status}`);
