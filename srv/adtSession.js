@@ -162,6 +162,7 @@ async function adtSaveSource({
     }
 
     const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
+    log(`[STEP2] lock xml (first 500)=${lockXml.substring(0, 500)}`);
 
     const m =
         /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i.exec(lockXml) ||
@@ -176,6 +177,14 @@ async function adtSaveSource({
     lockHandle = m[1].trim();
     log(`[STEP2] lockHandle=${lockHandle}`);
 
+    // Extract transport number (CORRNR) from lock response.
+    // ADT requires corrNr in the PUT URL for objects in a transport request.
+    // If caller didn't provide one, use the one returned by LOCK.
+    const corrNrMatch = /<CORRNR[^>]*>([^<]+)<\/CORRNR>/i.exec(lockXml);
+    // TODO: remove hardcode after test
+    const resolvedTransport = transport || (corrNrMatch ? corrNrMatch[1].trim() : '') || 'T4XK903271';
+    log(`[STEP2] corrNr from lock=${corrNrMatch?.[1]?.trim() || '(none)'}, using transport=${resolvedTransport || '(none)'}`);
+
     // -------------------------------------------------
     // STEP 3 — SET SOURCE
     // -------------------------------------------------
@@ -183,8 +192,8 @@ async function adtSaveSource({
     log(`\n[STEP3] SET SOURCE`);
 
     let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
-    if (transport) {
-        putUrl += `&corrNr=${encodeURIComponent(transport)}`;
+    if (resolvedTransport) {
+        putUrl += `&corrNr=${encodeURIComponent(resolvedTransport)}`;
     }
     log(`[STEP3] PUT url=${putUrl}`);
 
