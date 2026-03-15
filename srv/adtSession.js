@@ -125,29 +125,51 @@ async function adtSaveSource({
 
     // -------------------------------------------------
     // STEP 1 — CSRF
+    // Use a HEAD request on the objectUrl (lightweight — no body transfer).
+    // Avoids hitting the heavy /core/discovery endpoint which can timeout (503)
+    // on ABAP systems with many installed packages.
     // -------------------------------------------------
 
     log(`\n[STEP1] CSRF fetch`)
 
-    const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
+    const csrfResp = await client.head(objectUrl, {
         headers: {
             'X-CSRF-Token': 'Fetch',
-            'Accept': 'application/xml',
             'sap-adt-connection-id': connectionId,
             'User-Agent': 'Eclipse/4.37.0 ADT/3.52.0'
         }
     })
 
     csrfToken = csrfResp.headers['x-csrf-token'] || ''
+
+    // NOTE: We do NOT pass cookies manually. The BTP Cloud Connector maintains
+    // the HTTP session transparently via the keep-alive TCP connection (shared
+    // axios client). Forwarding cookies across proxy hops causes session
+    // mismatches that result in "invalid lock handle" (423) errors.
     sessionCookie = parseCookies(csrfResp.headers['set-cookie'])
 
     log(`[STEP1] status=${csrfResp.status}`)
     log(`[STEP1] csrfToken=${csrfToken?.substring(0,12)}`)
-    log(`[STEP1] cookie=${sessionCookie}`)
     log(`[STEP1] headers=${JSON.stringify(csrfResp.headers,null,2)}`)
 
     if (!csrfToken) {
-        throw new Error('CSRF token missing')
+        // Fallback: if HEAD doesn't return a CSRF token, try GET on objectUrl
+        log(`[STEP1] HEAD did not return CSRF token, falling back to GET`)
+        const csrfFallback = await client.get(objectUrl, {
+            headers: {
+                'X-CSRF-Token': 'Fetch',
+                'Accept': 'application/xml, application/vnd.sap.adt.core.objectstructure+xml',
+                'sap-adt-connection-id': connectionId,
+                'User-Agent': 'Eclipse/4.37.0 ADT/3.52.0'
+            }
+        })
+        csrfToken = csrfFallback.headers['x-csrf-token'] || ''
+        sessionCookie = parseCookies(csrfFallback.headers['set-cookie'])
+        log(`[STEP1] fallback status=${csrfFallback.status}, csrfToken=${csrfToken?.substring(0,12)}`)
+    }
+
+    if (!csrfToken) {
+        throw new Error('CSRF token missing — HEAD and GET on objectUrl both failed to return x-csrf-token')
     }
 
     // -------------------------------------------------
