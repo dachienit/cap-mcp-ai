@@ -110,32 +110,18 @@ async function adtSaveSource({
     // Uses executeHttpRequest so BTP Cloud Connector proxy handles auth correctly.
     // -------------------------------------------------
 
-    log(`\n[STEP1] CSRF fetch (HEAD on objectUrl)`);
+    log(`\n[STEP1] CSRF fetch (GET /sap/bc/adt/core/discovery)`);
 
-    let csrfResp;
-    try {
-        csrfResp = await sdkRequest(destName, userJwt, {
-            method: 'HEAD',
-            url: objectUrl,
-            headers: {
-                'X-CSRF-Token':          'Fetch',
-                'sap-adt-connection-id': connectionId,
-                'User-Agent':            'Eclipse/4.37.0 ADT/3.52.0'
-            }
-        });
-    } catch (headErr) {
-        log(`[STEP1] HEAD failed (${headErr.message}), falling back to GET`);
-        csrfResp = await sdkRequest(destName, userJwt, {
-            method: 'GET',
-            url: objectUrl,
-            headers: {
-                'X-CSRF-Token':          'Fetch',
-                'Accept':                'application/xml, application/vnd.sap.adt.core.objectstructure+xml',
-                'sap-adt-connection-id': connectionId,
-                'User-Agent':            'Eclipse/4.37.0 ADT/3.52.0'
-            }
-        });
-    }
+    // Use /sap/bc/adt/core/discovery — same as fetchAdtCsrfToken() in server.js
+    // which is proven to work via executeHttpRequest for activate/create-object.
+    const csrfResp = await sdkRequest(destName, userJwt, {
+        method: 'GET',
+        url:    `${ADT_BASE}/core/discovery`,
+        headers: {
+            'X-CSRF-Token': 'Fetch',
+            'Accept':       'application/atomsvc+xml, application/xml, */*'
+        }
+    });
 
     csrfToken     = csrfResp.headers['x-csrf-token'] || '';
     sessionCookie = parseCookies(csrfResp.headers['set-cookie']);
@@ -145,7 +131,7 @@ async function adtSaveSource({
     log(`[STEP1] cookie=${sessionCookie}`);
 
     if (!csrfToken) {
-        throw new Error(`CSRF token missing — HEAD/GET on ${objectUrl} did not return x-csrf-token (status=${csrfResp.status})`);
+        throw new Error(`CSRF token missing — /sap/bc/adt/core/discovery returned status=${csrfResp.status} without x-csrf-token`);
     }
 
     // -------------------------------------------------
