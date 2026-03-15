@@ -5,12 +5,12 @@
   "dependencies": {
     "@sap-cloud-sdk/connectivity": "^4.5.1",
     "@sap-cloud-sdk/http-client": "^4.5.1",
+    "@sap-cloud-sdk/resilience": "^4",
     "@sap/cds": "^9",
     "@sap/xsenv": "^6.1.0",
     "@sap/xssec": "^4",
     "express": "^4",
-    "passport": "^0.7.0",
-    "@sap-cloud-sdk/resilience": "^4"
+    "passport": "^0.7.0"
   },
   "devDependencies": {
     "@cap-js/sqlite": "^2",

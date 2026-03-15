@@ -68,14 +68,51 @@ async function sdkCsrfFetch(destName, jwt, log) {
 
 async function getCcProxy(destName, jwt, log) {
     const { getDestination } = require('@sap-cloud-sdk/connectivity');
+    const axios = require('axios');
+
+    // Get destination for baseURL and SCC location ID
     const dest = await getDestination({ destinationName: destName, jwt });
     const pc = dest.proxyConfiguration || {};
-    log(`[CC] baseURL=${dest.url}, proxy=${pc.host}:${pc.port}`);
+    const sccLocationId = dest.cloudConnectorLocationId
+        || (pc.headers || {})['SAP-Connectivity-SCC-Location-ID']
+        || '';
+    log(`[CC] baseURL=${dest.url}, proxy=${pc.host}:${pc.port}, sccLocationId="${sccLocationId}"`);
+
+    // Fetch connectivity token via jwt_bearer (tenant-aware).
+    // User JWT carries subscriber subaccount context → CC routes to correct SCC tunnel.
+    const xsenv = require('@sap/xsenv');
+    const services = xsenv.getServices({ connectivity: { tag: 'connectivity' } });
+    const conn = services.connectivity;
+    const tokenUrl = `${conn.token_service_url || conn.url}/oauth/token`;
+
+    const tokenResp = await axios.post(
+        tokenUrl,
+        new URLSearchParams({
+            grant_type:    'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            client_id:     conn.clientid,
+            client_secret: conn.clientsecret,
+            assertion:     jwt,
+            response_type: 'token'
+        }).toString(),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, validateStatus: () => true }
+    );
+
+    if (tokenResp.status !== 200 || !tokenResp.data?.access_token) {
+        throw new Error(`Connectivity token failed HTTP ${tokenResp.status}: ${JSON.stringify(tokenResp.data).substring(0, 200)}`);
+    }
+    log(`[CC] connectivity token OK`);
+
+    // Proxy-Authorization uses the connectivity token (BTP→CC auth).
+    // We intentionally OMIT SAP-Connectivity-Authentication (PP header)
+    // so ABAP uses MYSAPSSO2 cookie auth → same session → lock stays alive.
+    const proxyHeaders = { 'Proxy-Authorization': `Bearer ${tokenResp.data.access_token}` };
+    if (sccLocationId) proxyHeaders['SAP-Connectivity-SCC-Location-ID'] = sccLocationId;
+
     return {
-        baseURL: dest.url,
+        baseURL:   dest.url,
         proxyHost: pc.host,
         proxyPort: parseInt(pc.port, 10) || 20003,
-        proxyHeaders: pc.headers || {}   // contains Proxy-Authorization (connectivity JWT)
+        proxyHeaders
     };
 }
 
