@@ -182,7 +182,8 @@ async function adtSaveSource({
     // If caller didn't provide one, use the one returned by LOCK.
     const corrNrMatch = /<CORRNR[^>]*>([^<]+)<\/CORRNR>/i.exec(lockXml);
     // TODO: remove hardcode after test
-    const resolvedTransport = transport || (corrNrMatch ? corrNrMatch[1].trim() : '') || 'T4XK903271';
+    //const resolvedTransport = transport || (corrNrMatch ? corrNrMatch[1].trim() : '') || 'T4XK903271';
+    const resolvedTransport = 'T4XK903271';
     log(`[STEP2] corrNr from lock=${corrNrMatch?.[1]?.trim() || '(none)'}, using transport=${resolvedTransport || '(none)'}`);
 
     // -------------------------------------------------
