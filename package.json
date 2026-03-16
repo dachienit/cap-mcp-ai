@@ -9,8 +9,10 @@
     "@sap/cds": "^9",
     "@sap/xsenv": "^6.1.0",
     "@sap/xssec": "^4",
+    "axios-cookiejar-support": "^6.0.5",
     "express": "^4",
-    "passport": "^0.7.0"
+    "passport": "^0.7.0",
+    "tough-cookie": "^6.0.1"
   },
   "devDependencies": {
     "@cap-js/sqlite": "^2",
