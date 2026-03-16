@@ -847,22 +847,17 @@ cds.on('bootstrap', (app) => {
         }
 
         try {
-            const { adtLockObject } = require('./adtSession');
-            const result = await adtLockObject({
+            const { adtSaveSource } = require('./adtSession');
+            const result = await adtSaveSource({
                 destName:   dest,
                 userJwt:    jwt,
                 objectUrl,
-                log: (msg) => console.log(`[ADT] ${msg}`)
-                //sourceUrl:  srcUrl,
-                //source,
-                //transport,
-                //log: (msg) => console.log(msg)
+                sourceUrl:  srcUrl,
+                source,
+                transport,
+                log: (msg) => console.log(msg)
             });
-            res.json({
-                success: true,
-                lockHandle: result.lockHandle
-            });
-            //res.json({ success: true, message: 'Source saved and unlocked', sourceUrl: result.sourceUrl });
+            res.json({ success: true, message: 'Source saved and unlocked', sourceUrl: result.sourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'save-source');
         }
