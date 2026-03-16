@@ -39,11 +39,33 @@ async function buildClient(destName, userJwt, log) {
   return axios.create(reqConfig);
 }
 
-// Utility to parse array of Set-Cookie strings into a single Cookie string
-function extractCookies(setCookieHeader) {
-  if (!setCookieHeader) return '';
-  const cookiesArr = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-  return cookiesArr.map(c => c.split(';')[0]).join('; ');
+// Utility to properly parse and merge Set-Cookie arrays into a single Cookie string
+function updateCookies(existingCookieStr, newSetCookieArr) {
+  if (!newSetCookieArr) return existingCookieStr;
+  
+  const cookieMap = new Map();
+  
+  // Parse existing
+  if (existingCookieStr) {
+    existingCookieStr.split(';').forEach(c => {
+      const parts = c.trim().split('=');
+      if (parts.length >= 2) cookieMap.set(parts[0], parts.slice(1).join('='));
+    });
+  }
+  
+  // Parse new
+  const cookiesArr = Array.isArray(newSetCookieArr) ? newSetCookieArr : [newSetCookieArr];
+  cookiesArr.forEach(c => {
+    const pair = c.split(';')[0].trim();
+    const parts = pair.split('=');
+    if (parts.length >= 2) cookieMap.set(parts[0], parts.slice(1).join('='));
+  });
+  
+  const res = [];
+  for (const [k, v] of cookieMap.entries()) {
+    res.push(`${k}=${v}`);
+  }
+  return res.join('; ');
 }
 
 function extractLockHandle(xml) {
@@ -74,7 +96,8 @@ async function adtLockObject({
   const client = await buildClient(destName, userJwt, log);
 
   let csrfToken = '';
-  let connectionId = '';
+  const { randomUUID } = require('crypto');
+  let connectionId = randomUUID().replace(/-/g, '').toUpperCase();
   let sessionCookieStr = '';
   
   // STEP 1 - CSRF
@@ -83,15 +106,15 @@ async function adtLockObject({
   const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
     headers: {
       'X-CSRF-Token': 'Fetch',
-      'X-sap-adt-session-type': 'stateful'
+      'X-sap-adt-session-type': 'stateful',
+      'sap-adt-connection-id': connectionId
     }
   });
 
   csrfToken = csrfResp.headers['x-csrf-token'];
-  const { randomUUID } = require('crypto');
-  connectionId = csrfResp.headers['sap-adt-connection-id'] || randomUUID();
+  connectionId = csrfResp.headers['sap-adt-connection-id'] || connectionId;
   
-  sessionCookieStr = extractCookies(csrfResp.headers['set-cookie']);
+  sessionCookieStr = updateCookies(sessionCookieStr, csrfResp.headers['set-cookie']);
 
   log(`[STEP1] status=${csrfResp.status}`);
   log(`[STEP1] csrf=${csrfToken?.substring(0,10)}`);
@@ -125,10 +148,7 @@ async function adtLockObject({
 
   log(`[STEP2] lockHandle=${lockHandle}`)
 
-  const lockCookies = extractCookies(lockResp.headers['set-cookie'])
-  if (lockCookies) {
-    sessionCookieStr = sessionCookieStr ? `${sessionCookieStr}; ${lockCookies}` : lockCookies;
-  }
+  sessionCookieStr = updateCookies(sessionCookieStr, lockResp.headers['set-cookie']);
   log(`[STEP2] combined cookies length=${sessionCookieStr.length}`)
 
   if (!lockHandle) throw new Error('Cannot parse lockHandle')
@@ -154,7 +174,8 @@ async function adtSaveSource({
   const client = await buildClient(destName, userJwt, log);
 
   let lockHandle = '';
-  let connectionId = '';
+  const { randomUUID } = require('crypto');
+  let connectionId = randomUUID().replace(/-/g, '').toUpperCase();
   let csrfToken = '';
   let sessionCookieStr = '';
 
@@ -167,14 +188,14 @@ async function adtSaveSource({
     const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
       headers: {
         'X-CSRF-Token': 'Fetch',
-        'X-sap-adt-session-type': 'stateful'
+        'X-sap-adt-session-type': 'stateful',
+        'sap-adt-connection-id': connectionId
       }
     });
     
     csrfToken = csrfResp.headers['x-csrf-token'];
-    const { randomUUID } = require('crypto');
-    connectionId = csrfResp.headers['sap-adt-connection-id'] || randomUUID();
-    sessionCookieStr = extractCookies(csrfResp.headers['set-cookie']);
+    connectionId = csrfResp.headers['sap-adt-connection-id'] || connectionId;
+    sessionCookieStr = updateCookies(sessionCookieStr, csrfResp.headers['set-cookie']);
     
     log(`[adtSaveSource] STEP 1 RESULT: HTTP ${csrfResp.status}`);
     log(`[adtSaveSource] CSRF Token: ${csrfToken ? csrfToken.substring(0, 5) + '...' : 'MISSING'}`);
@@ -206,10 +227,7 @@ async function adtSaveSource({
     
     log(`[adtSaveSource] STEP 2 RESULT: HTTP ${lockResp.status}`);
     
-    const lockCookies = extractCookies(lockResp.headers['set-cookie']);
-    if (lockCookies) {
-      sessionCookieStr = sessionCookieStr ? `${sessionCookieStr}; ${lockCookies}` : lockCookies;
-    }
+    sessionCookieStr = updateCookies(sessionCookieStr, lockResp.headers['set-cookie']);
     log(`[adtSaveSource] Combined Cookies after Lock length: ${sessionCookieStr.length}`);
 
     if (lockResp.status >= 400) {
@@ -243,6 +261,7 @@ async function adtSaveSource({
     });
 
     log(`[adtSaveSource] STEP 3 RESULT: HTTP ${putResp.status}`);
+    sessionCookieStr = updateCookies(sessionCookieStr, putResp.headers['set-cookie']);
     if (putResp.status >= 400) {
       const putXml = typeof putResp.data === 'string' ? putResp.data : JSON.stringify(putResp.data);
       throw new Error(`Save source failed with HTTP ${putResp.status}: ${putXml}`);
@@ -263,6 +282,7 @@ async function adtSaveSource({
         'Cookie': sessionCookieStr
       }
     });
+    sessionCookieStr = updateCookies(sessionCookieStr, unlockResp.headers['set-cookie']);
     log(`[adtSaveSource] STEP 4 RESULT: HTTP ${unlockResp.status}`);
     log(`========================================\n`);
 
