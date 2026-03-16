@@ -1,68 +1,6 @@
-const axios = require('axios')
-const https = require('https')
-const http = require('http')
+const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
 
-const { getDestination } = require('@sap-cloud-sdk/connectivity')
-
-const ADT_BASE = '/sap/bc/adt'
-
-const HTTPS_AGENT = new https.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 60000,
-  maxSockets: 1
-})
-const HTTP_AGENT = new http.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 60000,
-  maxSockets: 1
-})
-
-async function buildClient(destName, jwt, log) {
-
-  const dest = await getDestination({
-    destinationName: destName,
-    jwt
-  })
-
-  if (!dest) throw new Error(`Destination ${destName} not found`)
-
-  log(`[ADT] destination URL=${dest.url}`)
-
-  const client = axios.create({
-    baseURL: dest.url,
-    withCredentials: true,
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      'User-Agent': 'Eclipse/4.37.0 ADT/3.52.0',
-      'Connection': 'keep-alive'
-    },
-    validateStatus: s => s < 500
-  })
-  
-  if (dest.proxyConfiguration) {
-    const proxy = dest.proxyConfiguration;
-    client.defaults.proxy = {
-      protocol: proxy.protocol,
-      host: proxy.host,
-      port: Number(proxy.port)
-    };
-
-    if (proxy.headers && proxy.headers['Proxy-Authorization']) {
-      client.defaults.headers['Proxy-Authorization'] = proxy.headers['Proxy-Authorization'];
-    }
-    
-    // SAP Cloud SDK uses false for rejectUnauthorized when talking to on-prem via proxy
-    client.defaults.httpsAgent = new https.Agent({
-      rejectUnauthorized: false,
-      keepAlive: true,
-      maxSockets: 1
-    });
-  }
-  log(`[ADT] proxy host=${dest.proxyConfiguration?.host}`);
-  log(`[ADT] proxy port=${dest.proxyConfiguration?.port}`);
-
-  return { client }
-}
+const ADT_BASE = '/sap/bc/adt';
 
 // Utility to parse array of Set-Cookie strings into a single Cookie string
 function extractCookies(setCookieHeader) {
@@ -94,54 +32,62 @@ async function adtLockObject({
   log
 }) {
 
-  log = log || console.log
+  log = log || console.log;
 
-  const { client } = await buildClient(destName, userJwt, log)
-
-  let csrfToken = ''
-  let connectionId = ''
-  let sessionCookieStr = ''
+  let csrfToken = '';
+  let connectionId = '';
+  let sessionCookieStr = '';
+  
+  const destParams = { destinationName: destName, jwt: userJwt };
+  const sdkOptions = { fetchCsrfToken: false };
 
   // STEP 1 - CSRF
-  log('[STEP1] Fetch CSRF')
+  log('[STEP1] Fetch CSRF');
 
-  const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
-    headers: {
-      'X-CSRF-Token': 'Fetch',
-      'X-sap-adt-session-type': 'stateful'
-    }
-  })
+  const csrfResp = await executeHttpRequest(
+    destParams,
+    {
+      method: 'GET',
+      url: `${ADT_BASE}/core/discovery`,
+      headers: {
+        'X-CSRF-Token': 'Fetch',
+        'X-sap-adt-session-type': 'stateful'
+      }
+    },
+    sdkOptions
+  );
 
-  csrfToken = csrfResp.headers['x-csrf-token']
-  const { randomUUID } = require('crypto')
-  connectionId = csrfResp.headers['sap-adt-connection-id'] || randomUUID()
+  csrfToken = csrfResp.headers['x-csrf-token'];
+  const { randomUUID } = require('crypto');
+  connectionId = csrfResp.headers['sap-adt-connection-id'] || randomUUID();
   
-  sessionCookieStr = extractCookies(csrfResp.headers['set-cookie'])
+  sessionCookieStr = extractCookies(csrfResp.headers['set-cookie']);
 
-  log(`[STEP1] status=${csrfResp.status}`)
-  log(`[STEP1] csrf=${csrfToken?.substring(0,10)}`)
-  log(`[STEP1] connectionId=${connectionId}`)
-  log(`[STEP1] sessionCookieStr length=${sessionCookieStr.length}`)
+  log(`[STEP1] status=${csrfResp.status}`);
+  log(`[STEP1] csrf=${csrfToken?.substring(0,10)}`);
+  log(`[STEP1] connectionId=${connectionId}`);
+  log(`[STEP1] sessionCookieStr length=${sessionCookieStr.length}`);
 
-  if (!csrfToken) throw new Error('CSRF token missing')
+  if (!csrfToken) throw new Error('CSRF token missing');
 
   // STEP 2 - LOCK
-  log('[STEP2] LOCK object')
+  log('[STEP2] LOCK object');
 
-  const lockResp = await client.post(
-    `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
-    null,
+  const lockResp = await executeHttpRequest(
+    destParams,
     {
+      method: 'POST',
+      url: `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
       headers: {
         'X-CSRF-Token': csrfToken,
         'X-sap-adt-session-type': 'stateful',
         'sap-adt-connection-id': connectionId,
-        'Cookie': sessionCookieStr
+        'Cookie': sessionCookieStr,
+        'Accept': '*/*'
       }
-    }
-  )
-
-  log(`[STEP2] status=${lockResp.status}`)
+    },
+    sdkOptions
+  );log(`[STEP2] status=${lockResp.status}`)
 
   const xml = typeof lockResp.data === 'string'
     ? lockResp.data
@@ -176,12 +122,14 @@ async function adtSaveSource({
   log
 }) {
   log = log || console.log;
-  const { client } = await buildClient(destName, userJwt, log);
 
   let lockHandle = '';
   let connectionId = '';
   let csrfToken = '';
   let sessionCookieStr = '';
+
+  const destParams = { destinationName: destName, jwt: userJwt };
+  const sdkOptions = { fetchCsrfToken: false };
 
   try {
     // ── Step 1: CSRF fetch
@@ -189,12 +137,18 @@ async function adtSaveSource({
     log(`[adtSaveSource] STEP 1: Fetching CSRF...`);
     log(`[adtSaveSource] URL: GET ${ADT_BASE}/core/discovery`);
     
-    const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
-      headers: {
-        'X-CSRF-Token': 'Fetch',
-        'X-sap-adt-session-type': 'stateful'
-      }
-    });
+    const csrfResp = await executeHttpRequest(
+      destParams,
+      {
+        method: 'GET',
+        url: `${ADT_BASE}/core/discovery`,
+        headers: {
+          'X-CSRF-Token': 'Fetch',
+          'X-sap-adt-session-type': 'stateful'
+        }
+      },
+      sdkOptions
+    );
     
     csrfToken = csrfResp.headers['x-csrf-token'];
     const { randomUUID } = require('crypto');
@@ -215,10 +169,11 @@ async function adtSaveSource({
     log(`[adtSaveSource] URL: POST ${lockUrl}`);
     log(`[adtSaveSource] Req Headers: X-CSRF-Token, X-sap-adt-session-type=stateful, sap-adt-connection-id, Cookie`);
     
-    const lockResp = await client.post(
-      lockUrl,
-      null,
+    const lockResp = await executeHttpRequest(
+      destParams,
       {
+        method: 'POST',
+        url: lockUrl,
         headers: {
           'X-CSRF-Token': csrfToken,
           'X-sap-adt-session-type': 'stateful',
@@ -226,7 +181,8 @@ async function adtSaveSource({
           'Cookie': sessionCookieStr,
           'Accept': '*/*'
         }
-      }
+      },
+      sdkOptions
     );
     
     log(`[adtSaveSource] STEP 2 RESULT: HTTP ${lockResp.status}`);
@@ -257,15 +213,22 @@ async function adtSaveSource({
     log(`[adtSaveSource] URL: PUT ${putUrl}`);
     log(`[adtSaveSource] Payload Size: ${source?.length || 0} chars`);
 
-    const putResp = await client.put(putUrl, source, {
-      headers: {
-        'X-CSRF-Token': csrfToken,
-        'X-sap-adt-session-type': 'stateful',
-        'sap-adt-connection-id': connectionId,
-        'Cookie': sessionCookieStr,
-        'Content-Type': 'text/plain; charset=utf-8'
-      }
-    });
+    const putResp = await executeHttpRequest(
+      destParams,
+      {
+        method: 'PUT',
+        url: putUrl,
+        data: source,
+        headers: {
+          'X-CSRF-Token': csrfToken,
+          'X-sap-adt-session-type': 'stateful',
+          'sap-adt-connection-id': connectionId,
+          'Cookie': sessionCookieStr,
+          'Content-Type': 'text/plain; charset=utf-8'
+        }
+      },
+      sdkOptions
+    );
 
     log(`[adtSaveSource] STEP 3 RESULT: HTTP ${putResp.status}`);
     if (putResp.status >= 400) {
@@ -280,16 +243,19 @@ async function adtSaveSource({
     log(`[adtSaveSource] STEP 4: Unlocking object...`);
     log(`[adtSaveSource] URL: DELETE ${unlockUrl}`);
     
-    const unlockResp = await client.delete(
-      unlockUrl,
+    const unlockResp = await executeHttpRequest(
+      destParams,
       {
+        method: 'DELETE',
+        url: unlockUrl,
         headers: {
           'X-CSRF-Token': csrfToken,
           'X-sap-adt-session-type': 'stateful',
           'sap-adt-connection-id': connectionId,
           'Cookie': sessionCookieStr
         }
-      }
+      },
+      sdkOptions
     );
     log(`[adtSaveSource] STEP 4 RESULT: HTTP ${unlockResp.status}`);
     log(`========================================\n`);
@@ -302,16 +268,19 @@ async function adtSaveSource({
     if (lockHandle && csrfToken) {
       log(`[adtSaveSource] Attempting Emergency Cleanup Unlock...`);
       try {
-        const cleanUpResp = await client.delete(
-          `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        const cleanUpResp = await executeHttpRequest(
+          destParams,
           {
+            method: 'DELETE',
+            url: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
             headers: {
               'X-CSRF-Token': csrfToken,
               'X-sap-adt-session-type': 'stateful',
               'sap-adt-connection-id': connectionId,
               'Cookie': sessionCookieStr
             }
-          }
+          },
+          sdkOptions
         );
         log(`[adtSaveSource] Cleanup unlock HTTP ${cleanUpResp.status}`);
       } catch (ue) {
