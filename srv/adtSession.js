@@ -112,7 +112,11 @@ async function adtLockObject({
   });
 
   csrfToken = csrfResp.headers['x-csrf-token'];
-  connectionId = csrfResp.headers['sap-adt-connection-id'] || connectionId;
+  connectionId = csrfResp.headers['sap-adt-connection-id'];
+  if (!connectionId) {
+    const { randomUUID } = require('crypto');
+    connectionId = randomUUID().replace(/-/g, '').toUpperCase();
+  }
   
   sessionCookieStr = updateCookies(sessionCookieStr, csrfResp.headers['set-cookie']);
 
@@ -140,11 +144,15 @@ async function adtLockObject({
     }
   );log(`[STEP2] status=${lockResp.status}`)
 
-  const xml = typeof lockResp.data === 'string'
-    ? lockResp.data
-    : JSON.stringify(lockResp.data)
+  let lockHandle = lockResp.headers['x-sap-adt-lock-handle'] || lockResp.headers['x-sap-adt-lockhandle'];
+  if (!lockHandle) {
+    const xml = typeof lockResp.data === 'string'
+      ? lockResp.data
+      : JSON.stringify(lockResp.data)
 
-  const lockHandle = extractLockHandle(xml)
+    lockHandle = extractLockHandle(xml)
+    if (!lockHandle && xml.length < 200 && !xml.includes('<')) lockHandle = xml.trim();
+  }
 
   log(`[STEP2] lockHandle=${lockHandle}`)
 
@@ -194,7 +202,11 @@ async function adtSaveSource({
     });
     
     csrfToken = csrfResp.headers['x-csrf-token'];
-    connectionId = csrfResp.headers['sap-adt-connection-id'] || connectionId;
+    connectionId = csrfResp.headers['sap-adt-connection-id'];
+    if (!connectionId) {
+      const { randomUUID } = require('crypto');
+      connectionId = randomUUID().replace(/-/g, '').toUpperCase();
+    }
     sessionCookieStr = updateCookies(sessionCookieStr, csrfResp.headers['set-cookie']);
     
     log(`[adtSaveSource] STEP 1 RESULT: HTTP ${csrfResp.status}`);
@@ -235,9 +247,15 @@ async function adtSaveSource({
       throw new Error(`Lock failed with HTTP ${lockResp.status}: ${lockXml}`);
     }
 
-    const xml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
-    lockHandle = extractLockHandle(xml);
-    if (!lockHandle && xml.length < 200 && !xml.includes('<')) lockHandle = xml.trim();
+    let extractedLockHandle = lockResp.headers['x-sap-adt-lock-handle'] || lockResp.headers['x-sap-adt-lockhandle'];
+    
+    if (!extractedLockHandle) {
+      const xml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
+      extractedLockHandle = extractLockHandle(xml);
+      if (!extractedLockHandle && xml.length < 200 && !xml.includes('<')) extractedLockHandle = xml.trim();
+    }
+    
+    lockHandle = extractedLockHandle;
     if (!lockHandle) throw new Error('Could not parse lockHandle from ADT response');
     log(`[adtSaveSource] Lock Handle extracted: ${lockHandle}`);
 
