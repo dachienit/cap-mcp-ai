@@ -47,24 +47,27 @@ const client = wrapper(axios.create({
   validateStatus: s => s < 500
 }))
   
-/*     if (dest.proxyConfiguration) {
+  if (dest.proxyConfiguration) {
+    const proxy = dest.proxyConfiguration;
+    client.defaults.proxy = {
+      protocol: proxy.protocol,
+      host: proxy.host,
+      port: Number(proxy.port)
+    };
 
-  const proxy = dest.proxyConfiguration
-
-  client.defaults.proxy = {
-    protocol: proxy.protocol,
-    host: proxy.host,
-    port: Number(proxy.port)
+    if (proxy.headers && proxy.headers['Proxy-Authorization']) {
+      client.defaults.headers['Proxy-Authorization'] = proxy.headers['Proxy-Authorization'];
+    }
+    
+    // SAP Cloud SDK uses false for rejectUnauthorized when talking to on-prem via proxy
+    client.defaults.httpsAgent = new https.Agent({
+      rejectUnauthorized: false,
+      keepAlive: true,
+      maxSockets: 1
+    });
   }
-
-  if (proxy.headers && proxy.headers['Proxy-Authorization']) {
-    client.defaults.headers['Proxy-Authorization'] =
-      proxy.headers['Proxy-Authorization']
-  }
-
-}
-log(`[ADT] proxy host=${dest.proxyConfiguration?.host}`)
-log(`[ADT] proxy port=${dest.proxyConfiguration?.port}`) */
+  log(`[ADT] proxy host=${dest.proxyConfiguration?.host}`);
+  log(`[ADT] proxy port=${dest.proxyConfiguration?.port}`);
 
   return { client, jar }
 }
