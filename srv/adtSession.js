@@ -259,6 +259,15 @@ async function adtSaveSource({
     if (!lockHandle) throw new Error('Could not parse lockHandle from ADT response');
     log(`[adtSaveSource] Lock Handle extracted: ${lockHandle}`);
 
+    log(`\n========================================`);
+    log(`[adtSaveSource] 🛑 STOPPING HERE FOR SM12 TEST.`);
+    log(`[adtSaveSource] Object should be locked now. Check SM12.`);
+    log(`[adtSaveSource] If it's not locked, Cloud Connector has already dropped the session.`);
+    log(`========================================\n`);
+    
+    // RETURN EARLY FOR TESTING!
+    return { success: true, lockHandle, message: "Locked up to SM12 check point" };
+
     // ── Step 3: Set source
     let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
     if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
