@@ -174,170 +174,48 @@ async function adtSaveSource({
   objectUrl,
   sourceUrl,
   source,
-  transport,
   log
 }) {
   log = log || console.log;
 
+  // We use the new STANDALONE SICF endpoint which handles Lock->Save->Unlock internally.
+  // This avoids all BTP Proxy / Cloud Connector session drop issues.
+  const CUSTOM_SICF_PATH = '/mcp/taf/octoagent';
+
+  log(`\n========================================`);
+  log(`[adtSaveSource] CALLING STANDALONE SICF API`);
+  log(`[adtSaveSource] Path: ${CUSTOM_SICF_PATH}`);
+  log(`[adtSaveSource] Object: ${objectUrl}`);
+  
   const client = await buildClient(destName, userJwt, log);
 
-  let lockHandle = '';
-  const { randomUUID } = require('crypto');
-  let connectionId = randomUUID().replace(/-/g, '').toUpperCase();
-  let csrfToken = '';
-  let sessionCookieStr = '';
-
   try {
-    // ── Step 1: CSRF fetch
-    log(`\n========================================`);
-    log(`[adtSaveSource] STEP 1: Fetching CSRF...`);
-    log(`[adtSaveSource] URL: GET ${ADT_BASE}/core/discovery`);
-    
-    const csrfResp = await client.get(`${ADT_BASE}/core/discovery`, {
-      headers: {
-        'X-CSRF-Token': 'Fetch',
-        'X-sap-adt-session-type': 'stateful',
-        'sap-adt-connection-id': connectionId
-      }
-    });
-    
-    csrfToken = csrfResp.headers['x-csrf-token'];
-    connectionId = csrfResp.headers['sap-adt-connection-id'];
-    if (!connectionId) {
-      const { randomUUID } = require('crypto');
-      connectionId = randomUUID().replace(/-/g, '').toUpperCase();
-    }
-    sessionCookieStr = updateCookies(sessionCookieStr, csrfResp.headers['set-cookie']);
-    
-    log(`[adtSaveSource] STEP 1 RESULT: HTTP ${csrfResp.status}`);
-    log(`[adtSaveSource] CSRF Token: ${csrfToken ? csrfToken.substring(0, 5) + '...' : 'MISSING'}`);
-    log(`[adtSaveSource] Connection ID: ${connectionId}`);
-    log(`[adtSaveSource] Session Cookies: ${sessionCookieStr || 'NONE'}`);
-
-    if (!csrfToken) throw new Error('CSRF fetch failed to return a token');
-
-    // ── Step 2: Lock
-    const lockUrl = `${objectUrl}?_action=LOCK&accessMode=MODIFY`;
-    log(`\n----------------------------------------`);
-    log(`[adtSaveSource] STEP 2: Locking object...`);
-    log(`[adtSaveSource] URL: POST ${lockUrl}`);
-    log(`[adtSaveSource] Req Headers: X-CSRF-Token, X-sap-adt-session-type=stateful, sap-adt-connection-id, Cookie`);
-    
-    const lockResp = await client.post(
-      lockUrl,
-      null,
-      {
-        headers: {
-          'X-CSRF-Token': csrfToken,
-          'X-sap-adt-session-type': 'stateful',
-          'sap-adt-connection-id': connectionId,
-          'Cookie': sessionCookieStr,
-          'Accept': '*/*'
-        }
-      }
-    );
-    
-    log(`[adtSaveSource] STEP 2 RESULT: HTTP ${lockResp.status}`);
-    
-    sessionCookieStr = updateCookies(sessionCookieStr, lockResp.headers['set-cookie']);
-    log(`[adtSaveSource] Combined Cookies after Lock length: ${sessionCookieStr.length}`);
-
-    if (lockResp.status >= 400) {
-      const lockXml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
-      throw new Error(`Lock failed with HTTP ${lockResp.status}: ${lockXml}`);
-    }
-
-    let extractedLockHandle = lockResp.headers['x-sap-adt-lock-handle'] || lockResp.headers['x-sap-adt-lockhandle'];
-    
-    if (!extractedLockHandle) {
-      const xml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
-      extractedLockHandle = extractLockHandle(xml);
-      if (!extractedLockHandle && xml.length < 200 && !xml.includes('<')) extractedLockHandle = xml.trim();
-    }
-    
-    lockHandle = extractedLockHandle;
-    if (!lockHandle) throw new Error('Could not parse lockHandle from ADT response');
-    log(`[adtSaveSource] Lock Handle extracted: ${lockHandle}`);
-
-    log(`\n========================================`);
-    log(`[adtSaveSource] 🛑 STOPPING HERE FOR SM12 TEST.`);
-    log(`[adtSaveSource] Object should be locked now. Check SM12.`);
-    log(`[adtSaveSource] If it's not locked, Cloud Connector has already dropped the session.`);
-    log(`========================================\n`);
-    
-    // RETURN EARLY FOR TESTING!
-    return { success: true, lockHandle, message: "Locked up to SM12 check point" };
-
-    // ── Step 3: Set source
-    let putUrl = `${sourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
-    if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
-    
-    log(`\n----------------------------------------`);
-    log(`[adtSaveSource] STEP 3: Saving source code...`);
-    log(`[adtSaveSource] URL: PUT ${putUrl}`);
-    log(`[adtSaveSource] Payload Size: ${source?.length || 0} chars`);
-
-    const putResp = await client.put(putUrl, source, {
-      headers: {
-        'X-CSRF-Token': csrfToken,
-        'X-sap-adt-session-type': 'stateful',
-        'sap-adt-connection-id': connectionId,
-        'Cookie': sessionCookieStr,
-        'Content-Type': 'text/plain; charset=utf-8'
-      }
+    const response = await client.post(CUSTOM_SICF_PATH, {
+      objecturl: objectUrl,
+      sourceurl: sourceUrl,
+      sourcecode: source
     });
 
-    log(`[adtSaveSource] STEP 3 RESULT: HTTP ${putResp.status}`);
-    sessionCookieStr = updateCookies(sessionCookieStr, putResp.headers['set-cookie']);
-    if (putResp.status >= 400) {
-      const putXml = typeof putResp.data === 'string' ? putResp.data : JSON.stringify(putResp.data);
-      throw new Error(`Save source failed with HTTP ${putResp.status}: ${putXml}`);
-    }
-    log(`[adtSaveSource] Source saved successfully!`);
+    log(`[adtSaveSource] API Status: ${response.status}`);
+    log(`[adtSaveSource] API Body: ${JSON.stringify(response.data)}`);
 
-    // ── Step 4: Unlock
-    const unlockUrl = `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`;
-    log(`\n----------------------------------------`);
-    log(`[adtSaveSource] STEP 4: Unlocking object...`);
-    log(`[adtSaveSource] URL: DELETE ${unlockUrl}`);
-    
-    const unlockResp = await client.delete(unlockUrl, {
-      headers: {
-        'X-CSRF-Token': csrfToken,
-        'X-sap-adt-session-type': 'stateful',
-        'sap-adt-connection-id': connectionId,
-        'Cookie': sessionCookieStr
-      }
-    });
-    sessionCookieStr = updateCookies(sessionCookieStr, unlockResp.headers['set-cookie']);
-    log(`[adtSaveSource] STEP 4 RESULT: HTTP ${unlockResp.status}`);
+    if (response.status !== 200 || !response.data.success) {
+      throw new Error(response.data.message || `API Error HTTP ${response.status}`);
+    }
+
+    log(`[adtSaveSource] SUCCESS: ${response.data.message}`);
     log(`========================================\n`);
 
-    return { success: true, lockHandle, sourceUrl };
+    return { 
+      success: true, 
+      message: response.data.message,
+      sourceUrl 
+    };
 
   } catch (error) {
-    log(`\n[adtSaveSource] ERROR OCCURRED: ${error.message}`);
-    // Attempt cleanup unlock if we have a handle
-    if (lockHandle && csrfToken) {
-      log(`[adtSaveSource] Attempting Emergency Cleanup Unlock...`);
-      try {
-        const cleanUpResp = await client.delete(
-          `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-          {
-            headers: {
-              'X-CSRF-Token': csrfToken,
-              'X-sap-adt-session-type': 'stateful',
-              'sap-adt-connection-id': connectionId,
-              'Cookie': sessionCookieStr
-            }
-          }
-        );
-        log(`[adtSaveSource] Cleanup unlock HTTP ${cleanUpResp.status}`);
-      } catch (ue) {
-        log(`[adtSaveSource] Cleanup unlock failed too: ${ue.message}`);
-      }
-    }
-    throw error;
+    const errorDetail = error.response ? JSON.stringify(error.response.data) : error.message;
+    log(`[adtSaveSource] FAILED: ${errorDetail}`);
+    throw new Error(`Failed to save via SICF Handler: ${errorDetail}`);
   }
 }
 

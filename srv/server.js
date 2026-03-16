@@ -1019,6 +1019,20 @@ cds.on('bootstrap', (app) => {
                         return { success: true, message: 'Source saved', sourceUrl: srcUrl };
                     }
 
+                    case 'save_source': {
+                        const { adtSaveSource } = require('./adtSession');
+                        const srcUrl = params.sourceUrl || `${params.objectUrl}/source/main`;
+                        const result = await adtSaveSource({
+                            destName:   dest,
+                            userJwt:    jwt,
+                            objectUrl:  params.objectUrl,
+                            sourceUrl:  srcUrl,
+                            source:     params.source,
+                            log: (msg) => console.log(msg)
+                        });
+                        return { success: true, message: 'Source saved atomically via SICF', sourceUrl: result.sourceUrl };
+                    }
+
                     case 'unlock': {
                         let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
                         if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
