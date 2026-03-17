@@ -32,8 +32,9 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     " Parse JSON payload
     DATA(lv_body) = server->request->get_cdata( ).
     /ui2/cl_json=>deserialize(
-      EXPORTING json = lv_body
-      CHANGING  data = ls_request ).
+      EXPORTING json        = lv_body
+                pretty_name = /ui2/cl_json=>pretty_mode-camel_case
+      CHANGING  data        = ls_request ).
 
     IF ls_request-objecturl IS INITIAL OR ls_request-source IS INITIAL.
       server->response->set_status( code = 400 reason = 'Bad Request' ).
@@ -56,8 +57,17 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     lo_client->request->set_method( 'GET' ).
     cl_http_utility=>set_request_uri( request = lo_client->request uri = '/sap/bc/adt/core/discovery' ).
     lo_client->request->set_header_field( name = 'x-csrf-token' value = 'Fetch' ).
-    lo_client->send( ).
-    lo_client->receive( ).
+    
+    TRY.
+        lo_client->send( ).
+        lo_client->receive( ).
+      CATCH cx_root INTO DATA(lo_exc_csrf).
+        DATA(lv_err_msg_csrf) = lo_exc_csrf->get_text( ).
+        server->response->set_status( code = 500 reason = 'HTTP Client Error' ).
+        server->response->set_cdata( |\{"error": "Step 1: Get CSRF Token failed", "detail": "{ lv_err_msg_csrf }"\}| ).
+        lo_client->close( ).
+        RETURN.
+    ENDTRY.
     DATA(lv_csrf) = lo_client->response->get_header_field( 'x-csrf-token' ).
 
     " 2. LOCK
@@ -66,8 +76,17 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     DATA(lv_lock_uri) = ls_request-objecturl && '?_action=LOCK&accessMode=MODIFY'.
     cl_http_utility=>set_request_uri( request = lo_client->request uri = lv_lock_uri ).
     lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
-    lo_client->send( ).
-    lo_client->receive( ).
+    
+    TRY.
+        lo_client->send( ).
+        lo_client->receive( ).
+      CATCH cx_root INTO DATA(lo_exc_lock).
+        DATA(lv_err_msg_lock) = lo_exc_lock->get_text( ).
+        server->response->set_status( code = 500 reason = 'HTTP Client Error' ).
+        server->response->set_cdata( |\{"error": "Step 2: Lock ADT Object failed", "detail": "{ lv_err_msg_lock }"\}| ).
+        lo_client->close( ).
+        RETURN.
+    ENDTRY.
 
     DATA(lv_lock_resp) = lo_client->response->get_cdata( ).
     lo_client->response->get_status( IMPORTING code = lv_status reason = lv_mess ).
@@ -78,10 +97,30 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    DATA lv_lock_handle TYPE string.
-    FIND REGEX '<LOCK_HANDLE[^>]*>(.*)</LOCK_HANDLE>' IN lv_lock_resp SUBMATCHES lv_lock_handle IGNORING CASE.
-    IF sy-subrc <> 0.
-      FIND REGEX '<adtlock:lockHandle[^>]*>(.*)</adtlock:lockHandle>' IN lv_lock_resp SUBMATCHES lv_lock_handle IGNORING CASE.
+    DATA: lv_lock_handle TYPE string,
+          lo_regex      TYPE REF TO cl_abap_regex,
+          lo_matcher    TYPE REF TO cl_abap_matcher.
+
+    " Try first pattern
+    CREATE OBJECT lo_regex
+      EXPORTING
+        pattern     = '<LOCK_HANDLE[^>]*>([^<]+)</LOCK_HANDLE>'
+        ignore_case = abap_true.
+    lo_matcher = lo_regex->create_matcher( text = lv_lock_resp ).
+    IF lo_matcher->find_next( ) = abap_true.
+      lv_lock_handle = lo_matcher->get_submatch( 1 ).
+    ENDIF.
+
+    " Try second pattern if first failed
+    IF lv_lock_handle IS INITIAL.
+      CREATE OBJECT lo_regex
+        EXPORTING
+          pattern     = '<adtlock:lockHandle[^>]*>([^<]+)</adtlock:lockHandle>'
+          ignore_case = abap_true.
+      lo_matcher = lo_regex->create_matcher( text = lv_lock_resp ).
+      IF lo_matcher->find_next( ) = abap_true.
+        lv_lock_handle = lo_matcher->get_submatch( 1 ).
+      ENDIF.
     ENDIF.
 
     IF lv_lock_handle IS INITIAL.
@@ -108,8 +147,17 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
     lo_client->request->set_header_field( name = 'Content-Type' value = 'text/plain; charset=utf-8' ).
     lo_client->request->set_cdata( ls_request-source ).
-    lo_client->send( ).
-    lo_client->receive( ).
+    
+    TRY.
+        lo_client->send( ).
+        lo_client->receive( ).
+      CATCH cx_root INTO DATA(lo_exc_set).
+        DATA(lv_err_msg_set) = lo_exc_set->get_text( ).
+        server->response->set_status( code = 500 reason = 'HTTP Client Error' ).
+        server->response->set_cdata( |\{"error": "Step 3: Set ADT Source failed", "detail": "{ lv_err_msg_set }"\}| ).
+        lo_client->close( ).
+        RETURN.
+    ENDTRY.
 
     DATA(lv_put_resp) = lo_client->response->get_cdata( ).
     lo_client->response->get_status( IMPORTING code = lv_status reason = lv_mess ).
@@ -125,8 +173,17 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     DATA(lv_unlock_uri) = ls_request-objecturl && '?_action=UNLOCK&lockHandle=' && cl_http_utility=>escape_url( lv_lock_handle ).
     cl_http_utility=>set_request_uri( request = lo_client->request uri = lv_unlock_uri ).
     lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
-    lo_client->send( ).
-    lo_client->receive( ).
+    
+    TRY.
+        lo_client->send( ).
+        lo_client->receive( ).
+      CATCH cx_root INTO DATA(lo_exc_unlock).
+        DATA(lv_err_msg_unlock) = lo_exc_unlock->get_text( ).
+        server->response->set_status( code = 500 reason = 'HTTP Client Error' ).
+        server->response->set_cdata( |\{"error": "Step 4: Unlock ADT Source failed", "detail": "{ lv_err_msg_unlock }"\}| ).
+        lo_client->close( ).
+        RETURN.
+    ENDTRY.
 
     lo_client->close( ).
 
