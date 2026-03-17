@@ -568,7 +568,7 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-   app.post('/api/adt/set-source', async (req, res) => {
+    app.post('/api/adt/set-source', async (req, res) => {
         try {
             const {
                 destinationName, objectUrl, sourceUrl, source, transport
@@ -602,30 +602,83 @@ cds.on('bootstrap', (app) => {
                 if (!targetSourceUrl) targetSourceUrl = `${objectUrl}/source/main`;
             }
 
-            console.log(`[adt/set-source] proxying to /mcp/taf/octoagent user=${logonName}, dest=${destinationName}, objectUrl=${objectUrl}`);
+            console.log(`[adt/set-source] starting monolithic save sequence user=${logonName}, dest=${destinationName}, objectUrl=${objectUrl}`);
 
-            // Extract the original cookie from the UI to pass to the ABAP Proxy so it can impersonate the Session
-            const uiCookie = req.headers.cookie || '';
-
-            const payload = {
-                objectUrl: objectUrl,
-                sourceUrl: targetSourceUrl,
-                source: source,
-                transport: transport || ''
-            };
-
-            await callAdt(destinationName, jwt, {
+            // Step 1: Get CSRF and base Session Cookie
+            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
+            
+            // Step 2: Lock the object
+            const lockResp = await callAdt(destinationName, jwt, {
                 method: 'POST',
-                url: '/mcp/taf/octoagent',
-                headers: { 
-                    'Content-Type': 'application/json', 
-                    'Accept': 'application/json',
-                    'Cookie': uiCookie
-                },
-                data: JSON.stringify(payload)
+                url: `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
+                headers: csrfHeaders(csrf, { 'Accept': 'application/xml, application/vnd.sap.adt+xml, */*' })
             });
 
-            res.json({ success: true, message: 'Source saved successfully via OCTOAGENT', sourceUrl: targetSourceUrl });
+            // Parse Lock Handle
+            const xml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
+            let lockHandle = '';
+            const patterns = [
+                /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i,
+                /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i,
+                /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i,
+                /"LOCK_HANDLE":\s*"([^"]+)"/
+            ];
+            for (const p of patterns) {
+                const m = p.exec(xml);
+                if (m) { lockHandle = m[1].trim(); break; }
+            }
+            if (!lockHandle && xml.length < 200 && !xml.includes('<')) lockHandle = xml.trim();
+            if (!lockHandle) throw new Error("Could not parse lock handle from ADT response");
+
+            // Extract the session cookie assigned to the Lock
+            const lockRespSetCookie = lockResp.headers['set-cookie'];
+            let lockSessionCookie = '';
+            if (Array.isArray(lockRespSetCookie)) {
+                lockSessionCookie = lockRespSetCookie.map(c => c.split(';')[0]).join('; ');
+            } else if (lockRespSetCookie) {
+                lockSessionCookie = lockRespSetCookie.split(';')[0];
+            }
+            const activeCookie = lockSessionCookie || csrf.cookie;
+
+            // Step 3: Set Source
+            const putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}` + 
+                           (transport ? `&corrNr=${encodeURIComponent(transport)}` : '');
+            
+            let setSourceError = null;
+            try {
+                await callAdt(destinationName, jwt, {
+                    method: 'PUT',
+                    url: putUrl,
+                    headers: {
+                        'X-CSRF-Token': csrf.token,
+                        'Cookie': activeCookie,
+                        'Content-Type': 'text/plain; charset=utf-8'
+                    },
+                    data: source
+                });
+            } catch (err) {
+                setSourceError = err;
+            }
+
+            // Step 4: Unlock (Always attempt unlock even if Set Source fails)
+            const unlockUrl = `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`;
+            try {
+                await callAdt(destinationName, jwt, {
+                    method: 'POST',
+                    url: unlockUrl,
+                    headers: {
+                        'X-CSRF-Token': csrf.token,
+                        'Cookie': activeCookie
+                    }
+                });
+            } catch (err) {
+                console.warn(`[adt/set-source] Unlock failed internally: ${err.message}`);
+            }
+
+            if (setSourceError) throw setSourceError;
+
+            res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
+
         } catch (error) {
             return handleAdtError(res, error, 'set-source');
         }

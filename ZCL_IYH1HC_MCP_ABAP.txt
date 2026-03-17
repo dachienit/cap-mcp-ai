@@ -29,6 +29,14 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     DATA: lv_status TYPE i,
           lv_mess   TYPE string.
 
+    " 0. Handle Pre-flight & CSRF Fetch from SAP Cloud SDK Node.js
+    DATA(lv_method) = server->request->get_header_field( '~request_method' ).
+    IF lv_method = 'GET' OR lv_method = 'HEAD' OR lv_method = 'OPTIONS'.
+      server->response->set_header_field( name = 'x-csrf-token' value = 'mcp-dummy-token' ).
+      server->response->set_status( code = 200 reason = 'OK' ).
+      RETURN.
+    ENDIF.
+
     " Read Raw Body String directly to avoid missing payload issues with xstring conversion
     DATA: lv_body TYPE string.
     lv_body = server->request->get_cdata( ).
@@ -53,12 +61,39 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    DATA: lo_client TYPE REF TO if_http_client.
-    
-    " Use NONE destination but FORCE it to skip the ICF Logon popup by authenticating explicitly
-    cl_http_client=>create_by_destination(
-      EXPORTING destination = 'NONE'
-      IMPORTING client      = lo_client ).
+    DATA: lo_client TYPE REF TO if_http_client,
+          lv_host   TYPE string,
+          lv_port   TYPE string,
+          lv_url    TYPE string.
+
+    " Force HTTPS locally because SSO Ticket (MYSAPSSO2) will be REJECTED via HTTP with E 00 001
+    server->get_location(
+      EXPORTING protocol = 'HTTPS'
+      IMPORTING host     = lv_host
+                port     = lv_port ).
+
+    IF lv_port IS NOT INITIAL.
+      lv_url = |https://{ lv_host }:{ lv_port }|.
+    ELSE.
+      " Fallback to HTTP if HTTPS isn't configured, though SSO ticket might fail
+      server->get_location(
+        EXPORTING protocol = 'HTTP'
+        IMPORTING host     = lv_host
+                  port     = lv_port ).
+      lv_url = |http://{ lv_host }:{ lv_port }|.
+    ENDIF.
+
+    cl_http_client=>create_by_url(
+      EXPORTING url    = lv_url
+      IMPORTING client = lo_client
+      EXCEPTIONS OTHERS = 1 ).
+
+    " Fallback to NONE if URL creation completely fails
+    IF sy-subrc <> 0 OR lo_client IS INITIAL.
+      cl_http_client=>create_by_destination(
+        EXPORTING destination = 'NONE'
+        IMPORTING client      = lo_client ).
+    ENDIF.
 
     IF lo_client IS INITIAL.
       server->response->set_status( code = 500 reason = 'Internal Server Error' ).
@@ -81,10 +116,23 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     lo_client->request->set_header_field( name = 'sap-client' value = CONV string( lv_client ) ).
     lo_client->request->set_header_field( name = 'sap-user'   value = CONV string( lv_user ) ).
 
+    " Generate a local SSO ticket to completely bypass Plugin Mode HTTPS Logon screens
+    DATA: lv_ticket TYPE string.
+    CALL FUNCTION 'CREATE_RFC_REENTRANCE_TICKET'
+      IMPORTING
+        ticket = lv_ticket
+      EXCEPTIONS
+        OTHERS = 1.
+    IF sy-subrc = 0.
+      lo_client->request->set_header_field( name = 'MYSAPSSO2' value = lv_ticket ).
+      lo_client->request->set_cookie( name = 'MYSAPSSO2' value = lv_ticket ).
+    ENDIF.
+
     " 1. GET CSRF Token
     lo_client->request->set_method( 'GET' ).
     cl_http_utility=>set_request_uri( request = lo_client->request uri = '/sap/bc/adt/core/discovery' ).
     lo_client->request->set_header_field( name = 'x-csrf-token' value = 'Fetch' ).
+    lo_client->request->set_header_field( name = 'Accept' value = '*/*' ).
     
     TRY.
         lo_client->send( ).
@@ -104,7 +152,14 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     DATA(lv_lock_uri) = ls_request-objecturl && '?_action=LOCK&accessMode=MODIFY'.
     cl_http_utility=>set_request_uri( request = lo_client->request uri = lv_lock_uri ).
     lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
+    lo_client->request->set_header_field( name = 'Accept' value = 'application/xml, application/vnd.sap.adt+xml' ).
     
+    " Re-inject the SSO ticket because refresh_request() clears headers
+    IF sy-subrc = 0 AND lv_ticket IS NOT INITIAL.
+      lo_client->request->set_header_field( name = 'MYSAPSSO2' value = lv_ticket ).
+      lo_client->request->set_cookie( name = 'MYSAPSSO2' value = lv_ticket ).
+    ENDIF.
+
     TRY.
         lo_client->send( ).
         lo_client->receive( ).
@@ -119,8 +174,18 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     DATA(lv_lock_resp) = lo_client->response->get_cdata( ).
     lo_client->response->get_status( IMPORTING code = lv_status reason = lv_mess ).
     IF lv_status <> 200 AND lv_status <> 204.
+      " Extract HTTP Headers for debugging
+      DATA: lv_headers TYPE string,
+            lt_fields  TYPE tihttpnvp.
+      lo_client->response->get_header_fields( CHANGING fields = lt_fields ).
+      LOOP AT lt_fields INTO DATA(ls_field).
+        lv_headers = lv_headers && ls_field-name && '=' && ls_field-value && '; '.
+      ENDLOOP.
+      
+      DATA(lv_error_json) = |\{"error":"Lock Failed", "status":{ lv_status }, "message":"{ lv_mess }", "ticket_generated": "{ xsdbool( lv_ticket IS NOT INITIAL ) }", "headers":"{ lv_headers }", "body":"{ escape( val = lv_lock_resp format = cl_abap_format=>e_json_string ) }"\}|.
+
       server->response->set_status( code = lv_status reason = 'Lock Failed' ).
-      server->response->set_cdata( lv_lock_resp ).
+      server->response->set_cdata( lv_error_json ).
       lo_client->close( ).
       RETURN.
     ENDIF.
