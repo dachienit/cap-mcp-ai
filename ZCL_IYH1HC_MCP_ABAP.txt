@@ -30,7 +30,14 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
           lv_mess   TYPE string.
 
     " Parse JSON payload
-    DATA(lv_body) = server->request->get_cdata( ).
+    " Use get_data() instead of get_cdata() to avoid charset/encoding issues on some WAS versions
+    DATA(lv_xbody) = server->request->get_data( ).
+    DATA: lv_body TYPE string.
+    
+    " Convert xstring to string (UTF-8)
+    DATA(lo_conv) = cl_abap_conv_in_ce=>create( encoding = 'UTF-8' ).
+    lo_conv->convert( EXPORTING input = lv_xbody IMPORTING data = lv_body ).
+
     /ui2/cl_json=>deserialize(
       EXPORTING json        = lv_body
                 pretty_name = /ui2/cl_json=>pretty_mode-camel_case
@@ -38,14 +45,34 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
 
     IF ls_request-objecturl IS INITIAL OR ls_request-source IS INITIAL.
       server->response->set_status( code = 400 reason = 'Bad Request' ).
-      server->response->set_cdata( '{"error":"Missing objectUrl or source"}' ).
+      server->response->set_cdata( '{"error":"Missing objectUrl or source", "debug_body_len":' && |{ strlen( lv_body ) }| && '}' ).
       RETURN.
     ENDIF.
 
     DATA: lo_client TYPE REF TO if_http_client.
-    cl_http_client=>create_by_destination(
-      EXPORTING destination = 'NONE'
-      IMPORTING client      = lo_client ).
+    " Use local host instead of NONE to avoid 'plugin mode HTTPS' dummy session errors
+    cl_http_client=>create_by_url(
+      EXPORTING url    = 'http://localhost' && sy-opsys " Use full local URL if possible, or relative
+      IMPORTING client = lo_client
+      EXCEPTIONS OTHERS = 1 ).
+
+    " Fallback to standard ALIAS if create_by_url fails locally
+    IF sy-subrc <> 0 OR lo_client IS INITIAL.
+       cl_http_client=>create_by_destination(
+         EXPORTING destination = 'NONE'
+         IMPORTING client      = lo_client ).
+    ENDIF.
+    
+    " Prevent 'Message E 00 001' by explicitly disabling redirect handling and logon popups
+    lo_client->propertytype_logon_popup = lo_client->co_disabled.
+    lo_client->propertytype_redirect    = lo_client->co_disabled.
+
+    " Forward current session cookies to the internal client to reuse ADT authorization
+    DATA: lt_cookies TYPE tihttpcki.
+    server->request->get_cookies( CHANGING cookies = lt_cookies ).
+    LOOP AT lt_cookies INTO DATA(ls_cookie).
+      lo_client->request->set_cookie( name = ls_cookie-name value = ls_cookie-value ).
+    ENDLOOP.
 
     IF lo_client IS INITIAL.
       server->response->set_status( code = 500 reason = 'Internal Server Error' ).
