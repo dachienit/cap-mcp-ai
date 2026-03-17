@@ -604,6 +604,9 @@ cds.on('bootstrap', (app) => {
 
             console.log(`[adt/set-source] proxying to /mcp/taf/octoagent user=${logonName}, dest=${destinationName}, objectUrl=${objectUrl}`);
 
+            // Extract the original cookie from the UI to pass to the ABAP Proxy so it can impersonate the Session
+            const uiCookie = req.headers.cookie || '';
+
             const payload = {
                 objectUrl: objectUrl,
                 sourceUrl: targetSourceUrl,
@@ -614,8 +617,12 @@ cds.on('bootstrap', (app) => {
             await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: '/mcp/taf/octoagent',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                data: payload
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    'Accept': 'application/json',
+                    'Cookie': uiCookie
+                },
+                data: JSON.stringify(payload)
             });
 
             res.json({ success: true, message: 'Source saved successfully via OCTOAGENT', sourceUrl: targetSourceUrl });
