@@ -8,16 +8,127 @@ CLASS zcl_iyh1hc_mcp_abap DEFINITION
     INTERFACES if_http_extension.
 ENDCLASS.
 
-
-
 CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
 
-
-* <SIGNATURE>---------------------------------------------------------------------------------------+
-* | Instance Public Method ZCL_IYH1HC_MCP_ABAP->IF_HTTP_EXTENSION~HANDLE_REQUEST
-* +-------------------------------------------------------------------------------------------------+
-* | [--->] SERVER                         TYPE REF TO IF_HTTP_SERVER
-* +--------------------------------------------------------------------------------------</SIGNATURE>
   METHOD if_http_extension~handle_request.
+    TYPES: BEGIN OF ty_request,
+             objecturl TYPE string,
+             sourceurl TYPE string,
+             source    TYPE string,
+             transport TYPE string,
+           END OF ty_request.
+    DATA: ls_request TYPE ty_request.
+
+    " Parse JSON payload
+    DATA(lv_body) = server->request->get_cdata( ).
+    /ui2/cl_json=>deserialize(
+      EXPORTING json = lv_body
+      CHANGING  data = ls_request ).
+
+    IF ls_request-objecturl IS INITIAL OR ls_request-source IS INITIAL.
+      server->response->set_status( code = 400 reason = 'Bad Request' ).
+      server->response->set_cdata( '{"error":"Missing objectUrl or source"}' ).
+      RETURN.
+    ENDIF.
+
+    DATA: lo_client TYPE REF TO if_http_client.
+    cl_http_client=>create_by_destination(
+      EXPORTING destination = 'NONE'
+      IMPORTING client      = lo_client ).
+
+    IF lo_client IS INITIAL.
+      server->response->set_status( code = 500 reason = 'Internal Server Error' ).
+      server->response->set_cdata( '{"error":"Cannot create HTTP client"}' ).
+      RETURN.
+    ENDIF.
+
+    " 1. GET CSRF Token
+    lo_client->request->set_method( 'GET' ).
+    cl_http_utility=>set_request_uri( request = lo_client->request uri = '/sap/bc/adt/core/discovery' ).
+    lo_client->request->set_header_field( name = 'x-csrf-token' value = 'Fetch' ).
+    lo_client->send( ).
+    lo_client->receive( ).
+    DATA(lv_csrf) = lo_client->response->get_header_field( 'x-csrf-token' ).
+
+    " 2. LOCK
+    lo_client->refresh_request( ).
+    lo_client->request->set_method( 'POST' ).
+    DATA(lv_lock_uri) = ls_request-objecturl && '?_action=LOCK&accessMode=MODIFY'.
+    cl_http_utility=>set_request_uri( request = lo_client->request uri = lv_lock_uri ).
+    lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
+    lo_client->send( ).
+    lo_client->receive( ).
+    
+    DATA(lv_lock_resp) = lo_client->response->get_cdata( ).
+    DATA(lv_status) = lo_client->response->get_status( ).
+    IF lv_status <> 200 AND lv_status <> 204.
+      server->response->set_status( code = lv_status reason = 'Lock Failed' ).
+      server->response->set_cdata( lv_lock_resp ).
+      lo_client->close( ).
+      RETURN.
+    ENDIF.
+
+    DATA lv_lock_handle TYPE string.
+    FIND REGEX '<LOCK_HANDLE[^>]*>(.*)</LOCK_HANDLE>' IN lv_lock_resp SUBMATCHES lv_lock_handle IGNORING CASE.
+    IF sy-subrc <> 0.
+      FIND REGEX '<adtlock:lockHandle[^>]*>(.*)</adtlock:lockHandle>' IN lv_lock_resp SUBMATCHES lv_lock_handle IGNORING CASE.
+    ENDIF.
+
+    IF lv_lock_handle IS INITIAL.
+      " If the response is small and does not have XML tags, it might just be the handle
+      IF strlen( lv_lock_resp ) < 200 AND lv_lock_resp CS '<' = abap_false.
+        lv_lock_handle = lv_lock_resp.
+        CONDENSE lv_lock_handle.
+      ELSE.
+        server->response->set_status( code = 500 reason = 'Parse Error' ).
+        server->response->set_cdata( '{"error":"Could not parse lock handle parameter"}' ).
+        lo_client->close( ).
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    " 3. SET SOURCE
+    lo_client->refresh_request( ).
+    lo_client->request->set_method( 'PUT' ).
+    DATA(lv_put_uri) = ls_request-sourceurl && '?lockHandle=' && cl_http_utility=>escape_url( lv_lock_handle ).
+    IF ls_request-transport IS NOT INITIAL.
+      lv_put_uri = lv_put_uri && '&corrNr=' && cl_http_utility=>escape_url( ls_request-transport ).
+    ENDIF.
+    cl_http_utility=>set_request_uri( request = lo_client->request uri = lv_put_uri ).
+    lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
+    lo_client->request->set_header_field( name = 'Content-Type' value = 'text/plain; charset=utf-8' ).
+    lo_client->request->set_cdata( ls_request-source ).
+    lo_client->send( ).
+    lo_client->receive( ).
+
+    DATA(lv_put_resp) = lo_client->response->get_cdata( ).
+    lv_status = lo_client->response->get_status( ).
+    
+    DATA(lv_set_source_failed) = abap_false.
+    IF lv_status <> 200 AND lv_status <> 204.
+      lv_set_source_failed = abap_true.
+    ENDIF.
+
+    " 4. UNLOCK (Always try to unlock if we got a lock earlier)
+    lo_client->refresh_request( ).
+    lo_client->request->set_method( 'DELETE' ).
+    DATA(lv_unlock_uri) = ls_request-objecturl && '?_action=UNLOCK&lockHandle=' && cl_http_utility=>escape_url( lv_lock_handle ).
+    cl_http_utility=>set_request_uri( request = lo_client->request uri = lv_unlock_uri ).
+    lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
+    lo_client->send( ).
+    lo_client->receive( ).
+
+    lo_client->close( ).
+
+    IF lv_set_source_failed = abap_true.
+      server->response->set_status( code = lv_status reason = 'Set Source Failed' ).
+      server->response->set_cdata( lv_put_resp ).
+      RETURN.
+    ENDIF.
+
+    " Success response
+    server->response->set_status( code = 200 reason = 'OK' ).
+    server->response->set_content_type( 'application/json' ).
+    server->response->set_cdata( '{"success":true,"message":"Source saved successfully via MCP ABAP handler"}' ).
   ENDMETHOD.
 ENDCLASS.

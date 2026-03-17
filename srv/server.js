@@ -571,12 +571,10 @@ cds.on('bootstrap', (app) => {
    app.post('/api/adt/set-source', async (req, res) => {
         try {
             const {
-                destinationName, objectUrl, sourceUrl, lockHandle,
-                sessionCookie, lockCsrfToken, source,
-                transport  // optional Transport request number
+                destinationName, objectUrl, sourceUrl, source, transport
             } = req.body;
-            if (!destinationName || !objectUrl || !lockHandle || source === undefined) {
-                return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, lockHandle, source' });
+            if (!destinationName || !objectUrl || source === undefined) {
+                return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, source' });
             }
 
             if (process.env.NODE_ENV !== 'production') {
@@ -589,7 +587,6 @@ cds.on('bootstrap', (app) => {
             // Use the sourceUrl if provided (from get-source step), otherwise resolve it
             let targetSourceUrl = sourceUrl;
             if (!targetSourceUrl) {
-                // Re-fetch object structure to find source link
                 try {
                     const structResp = await callAdt(destinationName, jwt, {
                         method: 'GET', url: objectUrl,
@@ -605,31 +602,23 @@ cds.on('bootstrap', (app) => {
                 if (!targetSourceUrl) targetSourceUrl = `${objectUrl}/source/main`;
             }
 
-            console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
-            console.log(`[adt/set-source] user=${logonName}, dest=${destinationName}, source_url=${targetSourceUrl}`);
-            console.log(`[adt/set-source] => REQ.BODY: sessionCookie=${!!sessionCookie}, lockCsrfToken: ${!!lockCsrfToken}`);
+            console.log(`[adt/set-source] proxying to /mcp/taf/octoagent user=${logonName}, dest=${destinationName}, objectUrl=${objectUrl}`);
 
-            // Use the session cookie and CSRF token provided by the client (from the lock step)
-            // This guarantees SAP sees the EXACT SAME session and token for this write operation.
-            let csrf = { cookie: sessionCookie, token: lockCsrfToken };
-            if (!csrf.token || !csrf.cookie) {
-                // Fallback (might fail with 403 or 423 if lock requires same session)
-                csrf = await fetchAdtCsrfToken(destinationName, jwt);
-                if (sessionCookie) csrf.cookie = sessionCookie;
-            }
-
-            // Build PUT URL: lockHandle required, corrNr (transport) optional
-            let putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}`;
-            if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
-            console.log(`[adt/set-source] PUT url: ${putUrl}`);
+            const payload = {
+                objectUrl: objectUrl,
+                sourceUrl: targetSourceUrl,
+                source: source,
+                transport: transport || ''
+            };
 
             await callAdt(destinationName, jwt, {
-                method: 'PUT',
-                url: putUrl,
-                headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8', 'Accept': 'text/plain, */*' }),
-                data: source
+                method: 'POST',
+                url: '/mcp/taf/octoagent',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                data: payload
             });
-            res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
+
+            res.json({ success: true, message: 'Source saved successfully via OCTOAGENT', sourceUrl: targetSourceUrl });
         } catch (error) {
             return handleAdtError(res, error, 'set-source');
         }
