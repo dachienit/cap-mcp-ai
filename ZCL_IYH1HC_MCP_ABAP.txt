@@ -8,8 +8,16 @@ CLASS zcl_iyh1hc_mcp_abap DEFINITION
     INTERFACES if_http_extension.
 ENDCLASS.
 
+
+
 CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
 
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_IYH1HC_MCP_ABAP->IF_HTTP_EXTENSION~HANDLE_REQUEST
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] SERVER                         TYPE REF TO IF_HTTP_SERVER
+* +--------------------------------------------------------------------------------------</SIGNATURE>
   METHOD if_http_extension~handle_request.
     TYPES: BEGIN OF ty_request,
              objecturl TYPE string,
@@ -18,6 +26,8 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
              transport TYPE string,
            END OF ty_request.
     DATA: ls_request TYPE ty_request.
+    DATA: lv_status TYPE i,
+          lv_mess   TYPE string.
 
     " Parse JSON payload
     DATA(lv_body) = server->request->get_cdata( ).
@@ -58,9 +68,9 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     lo_client->request->set_header_field( name = 'x-csrf-token' value = lv_csrf ).
     lo_client->send( ).
     lo_client->receive( ).
-    
+
     DATA(lv_lock_resp) = lo_client->response->get_cdata( ).
-    DATA(lv_status) = lo_client->response->get_status( ).
+    lo_client->response->get_status( IMPORTING code = lv_status reason = lv_mess ).
     IF lv_status <> 200 AND lv_status <> 204.
       server->response->set_status( code = lv_status reason = 'Lock Failed' ).
       server->response->set_cdata( lv_lock_resp ).
@@ -76,7 +86,7 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
 
     IF lv_lock_handle IS INITIAL.
       " If the response is small and does not have XML tags, it might just be the handle
-      IF strlen( lv_lock_resp ) < 200 AND lv_lock_resp CS '<' = abap_false.
+      IF strlen( lv_lock_resp ) < 200 AND lv_lock_resp CS '<'." = abap_false.
         lv_lock_handle = lv_lock_resp.
         CONDENSE lv_lock_handle.
       ELSE.
@@ -102,8 +112,8 @@ CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
     lo_client->receive( ).
 
     DATA(lv_put_resp) = lo_client->response->get_cdata( ).
-    lv_status = lo_client->response->get_status( ).
-    
+    lo_client->response->get_status( IMPORTING code = lv_status reason = lv_mess ).
+
     DATA(lv_set_source_failed) = abap_false.
     IF lv_status <> 200 AND lv_status <> 204.
       lv_set_source_failed = abap_true.
