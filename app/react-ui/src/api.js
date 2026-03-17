@@ -103,7 +103,8 @@ export async function setObjectSource(destinationName, objectUrl, lockHandle, so
  * @param {string} transport  - Transport request number (optional)
  */
 export async function saveObjectSource(destinationName, objectUrl, source, sourceUrl = null, transport = null) {
-    return post('/api/adt/save-source', { destinationName, objectUrl, source, sourceUrl, transport });
+    return post('/api/adt/set-source', { destinationName, objectUrl, source, sourceUrl, transport });
+    //return post('/api/adt/save-source', { destinationName, objectUrl, source, sourceUrl, transport });
 }
 
 /**
