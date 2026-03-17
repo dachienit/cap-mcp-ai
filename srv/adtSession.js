@@ -190,11 +190,14 @@ async function adtSaveSource({
   const client = await buildClient(destName, userJwt, log);
 
   try {
-    const response = await client.post(CUSTOM_SICF_PATH, {
+    const csrf = await fetchAdtCsrfToken(destName, userJwt);
+
+    
+/*     const response = await client.post(CUSTOM_SICF_PATH, {
       objecturl: objectUrl,
       sourceurl: sourceUrl,
       sourcecode: source
-    });
+    }); */
 
     log(`[adtSaveSource] API Status: ${response.status}`);
     log(`[adtSaveSource] API Body: ${JSON.stringify(response.data)}`);

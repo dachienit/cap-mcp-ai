@@ -1,0 +1,23 @@
+"! <p class="shorttext synchronized" lang="en">Standalone ADT Save Source Handler (SICF)</p>
+CLASS zcl_iyh1hc_mcp_abap DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    INTERFACES if_http_extension.
+ENDCLASS.
+
+
+
+CLASS ZCL_IYH1HC_MCP_ABAP IMPLEMENTATION.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_IYH1HC_MCP_ABAP->IF_HTTP_EXTENSION~HANDLE_REQUEST
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] SERVER                         TYPE REF TO IF_HTTP_SERVER
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD if_http_extension~handle_request.
+  ENDMETHOD.
+ENDCLASS.
