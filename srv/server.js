@@ -141,7 +141,7 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-   app.post('/api/adt/search', async (req, res) => {
+    app.post('/api/adt/search', async (req, res) => {
         try {
             const { destinationName, query, objectType = '', maxResults = 50 } = req.body;
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
@@ -240,7 +240,7 @@ cds.on('bootstrap', (app) => {
                     url,
                     headers: { 'Accept': 'application/xml' }
                 });
-                
+
                 const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
                 const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
                 const namePattern = /adtcore:name="([^"]+)"/;
@@ -260,7 +260,7 @@ cds.on('bootstrap', (app) => {
                     url: pkgUrl,
                     headers: { 'Accept': 'application/xml' }
                 });
-                
+
                 let pkgXml = typeof pkgResponse.data === 'string' ? pkgResponse.data : JSON.stringify(pkgResponse.data);
                 const pkgRefPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
                 const namePattern = /adtcore:name="([^"]+)"/;
@@ -281,20 +281,20 @@ cds.on('bootstrap', (app) => {
                     // 2. Get all objects in package
                     let limit = parseInt(maxResults, 10);
                     if (isNaN(limit) || limit < 1) limit = 50;
-                    
+
                     const contentsUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=*&packageName=${encodeURIComponent(query)}&maxResults=${limit}`;
                     const contentsResp = await callAdt(destinationName, jwt, {
                         method: 'GET',
                         url: contentsUrl,
                         headers: { 'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml' }
                     });
-                    
+
                     const xml = typeof contentsResp.data === 'string' ? contentsResp.data : JSON.stringify(contentsResp.data);
                     const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
                     const typePattern = /adtcore:type="([^"]+)"/;
                     const uriPattern = /adtcore:uri="([^"]*)"/;
                     const pkgPattern = /adtcore:packageName="([^"]*)"/;
-                    
+
                     while ((match = refPattern.exec(xml)) !== null) {
                         const tag = match[0];
                         const name = (namePattern.exec(tag) || [])[1];
@@ -338,7 +338,7 @@ cds.on('bootstrap', (app) => {
             // The ADT URI for packages is typically /sap/bc/adt/packages/<packageName>
             const packageUri = `/sap/bc/adt/packages/${encodeURIComponent(packageName.toLowerCase())}`;
             const url = `${ADT_BASE}/repository/informationsystem/objectproperties/transports?uri=${encodeURIComponent(packageUri)}`;
-            
+
             const response = await callAdt(destinationName, jwt, {
                 method: 'GET',
                 url,
@@ -347,7 +347,7 @@ cds.on('bootstrap', (app) => {
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
             const transports = [];
-            
+
             // Example XML element:
             // <tpr:transport number="T4XK903271" description="IYH1HC packages" owner="IYH1HC" status="D" ... />
             const refPattern = /<(?:tpr:transport)[^>]*?>/gm;
@@ -519,10 +519,10 @@ cds.on('bootstrap', (app) => {
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
-                headers: csrfHeaders(csrf, { 
+                headers: csrfHeaders(csrf, {
                     'Accept': '*/*',
                     'X-sap-adt-sessiontype': 'stateful'
-                 })
+                })
             });
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
@@ -609,12 +609,12 @@ cds.on('bootstrap', (app) => {
 
             // Step 1: Get CSRF and base Session Cookie
             const csrf = await fetchAdtCsrfToken(destinationName, jwt);
-            
+
             // Step 2: Lock the object
             const lockResp = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
-                headers: csrfHeaders(csrf, { 
+                headers: csrfHeaders(csrf, {
                     'Accept': 'application/xml, application/vnd.sap.adt+xml, */*',
                     'X-sap-adt-sessiontype': 'stateful'
                 })
@@ -646,12 +646,13 @@ cds.on('bootstrap', (app) => {
             }
             const activeCookie = lockSessionCookie || csrf.cookie;
 
-            console.log(`[adt/set-source/lock] Lock handle=${lockHandle}, TR=${transport}`);
+            transport = 'T4XK903271';
+            console.log(`[adt/set-source/lock] Lock handle=${lockHandle}, TR=${transport}, activeCookie_len=${activeCookie.length}, lockSessionCookie_len=${lockSessionCookie.length}`);
 
             // Step 3: Set Source
-            const putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}` + 
-                           (transport ? `&corrNr=${encodeURIComponent(transport)}` : '');
-            
+            const putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}` +
+                (transport ? `&corrNr=${encodeURIComponent(transport)}` : '');
+
             let setSourceError = null;
             try {
                 await callAdt(destinationName, jwt, {
@@ -659,14 +660,18 @@ cds.on('bootstrap', (app) => {
                     url: putUrl,
                     headers: {
                         'X-CSRF-Token': csrf.token,
-                        'Cookie': activeCookie,
                         'Content-Type': 'text/plain; charset=utf-8',
                         'X-sap-adt-sessiontype': 'stateful'
+                    },
+                    // Pass the lock session cookie via customRequestConfiguration so SDK does NOT strip it
+                    customRequestConfiguration: {
+                        headers: { 'Cookie': activeCookie }
                     },
                     data: source
                 });
             } catch (err) {
-                console.log(`[adt/set-source/setsource] Error=${err}, URL=${putUrl}, Source=${source}`);
+                const errBody = err.response?.data ? JSON.stringify(err.response.data).substring(0, 300) : '(no body)';
+                console.log(`[adt/set-source/setsource] Error=${err.message}, status=${err.response?.status}, body=${errBody}, URL=${putUrl}`);
                 setSourceError = err;
             }
 
@@ -678,12 +683,15 @@ cds.on('bootstrap', (app) => {
                     url: unlockUrl,
                     headers: {
                         'X-CSRF-Token': csrf.token,
-                        'Cookie': activeCookie,
                         'X-sap-adt-sessiontype': 'stateful'
+                    },
+                    customRequestConfiguration: {
+                        headers: { 'Cookie': activeCookie }
                     }
                 });
             } catch (err) {
-                console.warn(`[adt/set-source] Unlock failed internally: ${err.message}`);
+                const unlockBody = err.response?.data ? JSON.stringify(err.response.data).substring(0, 200) : '(no body)';
+                console.warn(`[adt/set-source] Unlock failed: ${err.message}, status=${err.response?.status}, body=${unlockBody}`);
             }
 
             if (setSourceError) throw setSourceError;
@@ -897,7 +905,7 @@ cds.on('bootstrap', (app) => {
         if (source === undefined || source === null) return res.status(400).json({ error: 'Missing source' });
 
         const dest = destinationName || 'T4X_011';
-        const jwt  = getUserJwt(req);
+        const jwt = getUserJwt(req);
         const user = req.authInfo?.getLogonName?.() || 'unknown';
         const srcUrl = reqSourceUrl || `${objectUrl}/source/main`;
         console.log(`[adt/save-source] user=${user}, dest=${dest}, url=${objectUrl}`);
@@ -909,10 +917,10 @@ cds.on('bootstrap', (app) => {
         try {
             const { adtSaveSource } = require('./adtSession');
             const result = await adtSaveSource({
-                destName:   dest,
-                userJwt:    jwt,
+                destName: dest,
+                userJwt: jwt,
                 objectUrl,
-                sourceUrl:  srcUrl,
+                sourceUrl: srcUrl,
                 source,
                 transport,
                 log: (msg) => console.log(msg)
@@ -1013,15 +1021,18 @@ cds.on('bootstrap', (app) => {
                         const rawType = params.objectType || 'CLAS/OC';
                         const baseType = rawType.includes('/') ? rawType.split('/')[0] : rawType;
                         const typeMap = {
-                            CLAS: { uri: 'oo/classes', ct: 'application/vnd.sap.adt.oo.classes.v4+xml',
+                            CLAS: {
+                                uri: 'oo/classes', ct: 'application/vnd.sap.adt.oo.classes.v4+xml',
                                 xml: (n, pkg, d, pkgPath) =>
                                     `<?xml version="1.0" encoding="utf-8"?>\n<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}" class:visibility="public">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</class:abapClass>`
                             },
-                            PROG: { uri: 'programs/programs', ct: 'application/vnd.sap.adt.programs.programs.v2+xml',
+                            PROG: {
+                                uri: 'programs/programs', ct: 'application/vnd.sap.adt.programs.programs.v2+xml',
                                 xml: (n, pkg, d, pkgPath) =>
                                     `<?xml version="1.0" encoding="utf-8"?>\n<program:abapProgram xmlns:adtcore="http://www.sap.com/adt/core" xmlns:program="http://www.sap.com/adt/programs/programs"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}" program:programType="executableProgram">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</program:abapProgram>`
                             },
-                            INTF: { uri: 'oo/interfaces', ct: 'application/vnd.sap.adt.oo.interface.v2+xml',
+                            INTF: {
+                                uri: 'oo/interfaces', ct: 'application/vnd.sap.adt.oo.interface.v2+xml',
                                 xml: (n, pkg, d, pkgPath) =>
                                     `<?xml version="1.0" encoding="utf-8"?>\n<oo:interface xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</oo:interface>`
                             }
@@ -1029,7 +1040,7 @@ cds.on('bootstrap', (app) => {
                         const cfg = typeMap[baseType];
                         if (!cfg) throw new Error(`Unsupported objectType: ${rawType}`);
                         const cleanName = (params.name || '').toUpperCase();
-                        const cleanPkg  = (params.packageName || '').toUpperCase();
+                        const cleanPkg = (params.packageName || '').toUpperCase();
                         const cleanDesc = (params.description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
                         const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, params.parentPath || '');
                         const postUrl = params.transport ? `${ADT_BASE}/${cfg.uri}?corrNr=${encodeURIComponent(params.transport)}` : `${ADT_BASE}/${cfg.uri}`;
@@ -1083,11 +1094,11 @@ cds.on('bootstrap', (app) => {
                         const { adtSaveSource } = require('./adtSession');
                         const srcUrl = params.sourceUrl || `${params.objectUrl}/source/main`;
                         const result = await adtSaveSource({
-                            destName:   dest,
-                            userJwt:    jwt,
-                            objectUrl:  params.objectUrl,
-                            sourceUrl:  srcUrl,
-                            source:     params.source,
+                            destName: dest,
+                            userJwt: jwt,
+                            objectUrl: params.objectUrl,
+                            sourceUrl: srcUrl,
+                            source: params.source,
                             log: (msg) => console.log(msg)
                         });
                         return { success: true, message: 'Source saved atomically via SICF', sourceUrl: result.sourceUrl };
@@ -1107,14 +1118,14 @@ cds.on('bootstrap', (app) => {
                     case 'activate': {
                         const csrf = await fetchAdtCsrfToken(dest, jwt);
                         const normalized = (params.objects || []).map(o => ({
-                            uri:       o.url || o['adtcore:uri'] || '',
-                            name:      (o.name || o['adtcore:name'] || '').toUpperCase(),
-                            type:      o.type || o['adtcore:type'] || '',
+                            uri: o.url || o['adtcore:uri'] || '',
+                            name: (o.name || o['adtcore:name'] || '').toUpperCase(),
+                            type: o.type || o['adtcore:type'] || '',
                             parentUri: o.parentUri || o['adtcore:parentUri'] || ''
                         }));
                         const objRefs = normalized.map(o => {
                             let attrs = `adtcore:uri="${o.uri}" adtcore:name="${o.name}"`;
-                            if (o.type)      attrs += ` adtcore:type="${o.type}"`;
+                            if (o.type) attrs += ` adtcore:type="${o.type}"`;
                             if (o.parentUri) attrs += ` adtcore:parentUri="${o.parentUri}"`;
                             return `  <adtcore:objectReference ${attrs}/>`;
                         }).join('\n');
