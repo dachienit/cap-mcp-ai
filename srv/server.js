@@ -644,7 +644,26 @@ cds.on('bootstrap', (app) => {
             } else if (lockRespSetCookie) {
                 lockSessionCookie = lockRespSetCookie.split(';')[0];
             }
-            const activeCookie = lockSessionCookie || csrf.cookie;
+
+            // Merge the new lock session cookie with the old CSRF cookies so we don't lose Load Balancer & CSRF linkage
+            let activeCookieMap = new Map();
+            if (csrf.cookie) {
+                csrf.cookie.split(';').forEach(c => {
+                    const p = c.trim().split('=');
+                    if (p.length >= 2) activeCookieMap.set(p[0], p.slice(1).join('='));
+                });
+            }
+            if (lockSessionCookie) {
+                lockSessionCookie.split(';').forEach(c => {
+                    const p = c.trim().split('=');
+                    if (p.length >= 2) activeCookieMap.set(p[0], p.slice(1).join('='));
+                });
+            }
+            const activeCookieArray = [];
+            for (const [k, v] of activeCookieMap.entries()) {
+                activeCookieArray.push(`${k}=${v}`);
+            }
+            const activeCookie = activeCookieArray.join('; ');
 
             const transport1 = 'T4XK903271';
             console.log(`[adt/set-source/lock] Lock handle=${lockHandle}, TR=${transport1}, activeCookie_len=${activeCookie.length}, lockSessionCookie_len=${lockSessionCookie.length}`);
