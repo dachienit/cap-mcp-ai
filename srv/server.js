@@ -519,7 +519,10 @@ cds.on('bootstrap', (app) => {
             const response = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
-                headers: csrfHeaders(csrf, { 'Accept': '*/*' })
+                headers: csrfHeaders(csrf, { 
+                    'Accept': '*/*',
+                    'X-sap-adt-sessiontype': 'stateful'
+                 })
             });
 
             const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
@@ -611,7 +614,10 @@ cds.on('bootstrap', (app) => {
             const lockResp = await callAdt(destinationName, jwt, {
                 method: 'POST',
                 url: `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
-                headers: csrfHeaders(csrf, { 'Accept': 'application/xml, application/vnd.sap.adt+xml, */*' })
+                headers: csrfHeaders(csrf, { 
+                    'Accept': 'application/xml, application/vnd.sap.adt+xml, */*',
+                    'X-sap-adt-sessiontype': 'stateful'
+                })
             });
 
             // Parse Lock Handle
