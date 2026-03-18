@@ -646,12 +646,12 @@ cds.on('bootstrap', (app) => {
             }
             const activeCookie = lockSessionCookie || csrf.cookie;
 
-            transport = 'T4XK903271';
-            console.log(`[adt/set-source/lock] Lock handle=${lockHandle}, TR=${transport}, activeCookie_len=${activeCookie.length}, lockSessionCookie_len=${lockSessionCookie.length}`);
+            const transport1 = 'T4XK903271';
+            console.log(`[adt/set-source/lock] Lock handle=${lockHandle}, TR=${transport1}, activeCookie_len=${activeCookie.length}, lockSessionCookie_len=${lockSessionCookie.length}`);
 
             // Step 3: Set Source
             const putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}` +
-                (transport ? `&corrNr=${encodeURIComponent(transport)}` : '');
+                (transport1 ? `&corrNr=${encodeURIComponent(transport1)}` : '');
 
             let setSourceError = null;
             try {
