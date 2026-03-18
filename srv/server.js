@@ -646,6 +646,8 @@ cds.on('bootstrap', (app) => {
             }
             const activeCookie = lockSessionCookie || csrf.cookie;
 
+            console.log(`[adt/set-source/lock] Lock handle=${lockHandle}, TR=${transport}`);
+
             // Step 3: Set Source
             const putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}` + 
                            (transport ? `&corrNr=${encodeURIComponent(transport)}` : '');
@@ -658,11 +660,13 @@ cds.on('bootstrap', (app) => {
                     headers: {
                         'X-CSRF-Token': csrf.token,
                         'Cookie': activeCookie,
-                        'Content-Type': 'text/plain; charset=utf-8'
+                        'Content-Type': 'text/plain; charset=utf-8',
+                        'X-sap-adt-sessiontype': 'stateful'
                     },
                     data: source
                 });
             } catch (err) {
+                console.log(`[adt/set-source/setsource] Error=${err}, URL=${putUrl}, Source=${source}`);
                 setSourceError = err;
             }
 
@@ -674,7 +678,8 @@ cds.on('bootstrap', (app) => {
                     url: unlockUrl,
                     headers: {
                         'X-CSRF-Token': csrf.token,
-                        'Cookie': activeCookie
+                        'Cookie': activeCookie,
+                        'X-sap-adt-sessiontype': 'stateful'
                     }
                 });
             } catch (err) {
