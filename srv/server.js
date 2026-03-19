@@ -114,6 +114,15 @@ cds.on('bootstrap', (app) => {
         }
     });
 
+    app.get('/api/get-token', (req, res) => {
+        const token = getUserJwt(req);
+        if (token) {
+            res.json({ token: `Bearer ${token}` });
+        } else {
+            res.status(401).json({ error: 'No JWT found' });
+        }
+    });
+
     app.post('/api/fetch-bom', async (req, res) => {
         try {
             const destinationName = req.body?.destinationName || 'T4X_011';
