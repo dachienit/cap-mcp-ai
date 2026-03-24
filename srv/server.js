@@ -18,12 +18,9 @@ cds.on('bootstrap', (app) => {
     const express = require('express');
     app.use(express.json());
 
-    // ADT base path â€” SAP ICF node for ABAP Development Tools
-    // Cloud Connector must expose this path: /sap/bc/adt
-    const ADT_BASE = '/sap/bc/adt';
+    const { callMcpTool } = require('./mcp-client');
 
-    //   Authorization header = XSUAA JWT forwarded by approuter â†’ use this FIRST for PP
-    //   authInfo.getToken() = fallback only
+    // ── Helper: extract user JWT from request ──────────────────────────────────
     function getUserJwt(req) {
         const authHeader = req.headers.authorization;
         const jwtFromHeader = authHeader && authHeader.startsWith('Bearer ')
@@ -35,65 +32,17 @@ cds.on('bootstrap', (app) => {
         return jwtFromHeader || jwtFromAuthInfo || null;
     }
 
-    async function callAdt(destinationName, jwt, options) {
-        const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
-        try {
-            return await executeHttpRequest(
-                { destinationName, jwt },
-                options
-            );
-        } catch (err) {
-            // Enrich error with downstream HTTP status so we can forward it to client
-            const downstreamStatus = err.response?.status || err.cause?.response?.status;
-            const downstreamBody = err.response?.data || err.cause?.response?.data;
-            if (downstreamStatus) {
-                err.downstreamStatus = downstreamStatus;
-                err.downstreamBody = downstreamBody;
-            }
-            throw err;
-        }
+    // ── Helper: handle and format errors from MCP calls ────────────────────────
+    function handleMcpError(res, err, endpoint) {
+        const msg = err.message || 'Unknown MCP error';
+        const status = msg.includes('401') ? 401 : msg.includes('403') ? 403 : 500;
+        console.error(`[mcp/${endpoint}] Error (HTTP ${status}):`, msg);
+        return res.status(status).json({ error: msg, endpoint });
     }
 
-    function handleAdtError(res, err, endpoint) {
-        const status = err.downstreamStatus || 500;
-        console.error(`[adt/${endpoint}] Error (HTTP ${status}):`, err.message);
-        if (err.downstreamBody) {
-            console.error(`[adt/${endpoint}] Downstream:`, JSON.stringify(err.downstreamBody).substring(0, 500));
-        }
-        return res.status(status).json({
-            error: err.message,
-            downstream: err.downstreamBody,
-            endpoint
-        });
-    }
-
-    // write requests can send the same cookie, letting SAP match the session.
-    async function fetchAdtCsrfToken(destinationName, jwt) {
-        const resp = await callAdt(destinationName, jwt, {
-            method: 'GET',
-            url: `${ADT_BASE}/core/discovery`,
-            headers: { 'X-CSRF-Token': 'Fetch', 'Accept': 'application/atomsvc+xml, application/xml, */*' }
-        });
-        const token = resp.headers['x-csrf-token'] || resp.headers['X-CSRF-Token'] || '';
-        // Extract session cookie(s) â€” strip path/domain/max-age directives, keep name=value pairs
-        const setCookieHeader = resp.headers['set-cookie'];
-        let cookie = '';
-        if (Array.isArray(setCookieHeader)) {
-            cookie = setCookieHeader.map(c => c.split(';')[0]).join('; ');
-        } else if (setCookieHeader) {
-            cookie = setCookieHeader.split(';')[0];
-        }
-        console.log(`[csrf] token=${token?.substring(0, 10) || '(empty)'}, cookie_length=${cookie?.length || 0}`);
-        return { token, cookie };
-    }
-
-    // Helper: build headers with CSRF token + session cookie
-    function csrfHeaders(csrfResult, extra = {}) {
-        const h = { 'X-CSRF-Token': csrfResult.token, ...extra };
-        if (csrfResult.cookie) h['Cookie'] = csrfResult.cookie;
-        return h;
-    }
-
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/me — User info (unchanged, no ADT call)
+    // ══════════════════════════════════════════════════════════════════════════
     app.get('/api/me', (req, res) => {
         if (req.authInfo) {
             res.json({
@@ -103,12 +52,7 @@ cds.on('bootstrap', (app) => {
                 lastName: req.authInfo.getFamilyName()
             });
         } else if (process.env.NODE_ENV !== 'production') {
-            res.json({
-                userId: 'dev-user',
-                email: 'dev@local.host',
-                firstName: 'Local',
-                lastName: 'Developer'
-            });
+            res.json({ userId: 'dev-user', email: 'dev@local.host', firstName: 'Local', lastName: 'Developer' });
         } else {
             res.status(401).json({ error: 'Not authenticated' });
         }
@@ -123,617 +67,233 @@ cds.on('bootstrap', (app) => {
         }
     });
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/fetch-bom — Kept for compatibility (direct OData call, not ADT)
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/fetch-bom', async (req, res) => {
-        try {
-            const destinationName = req.body?.destinationName || 'T4X_011';
-            if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    data: [
-                        { BillOfMaterialItemCategory: 'L', Language: 'EN', BillOfMaterialItemCategoryDesc: 'Stock item (Mock)' },
-                        { BillOfMaterialItemCategory: 'N', Language: 'EN', BillOfMaterialItemCategoryDesc: 'Non-stock item (Mock)' },
-                        { BillOfMaterialItemCategory: 'T', Language: 'EN', BillOfMaterialItemCategoryDesc: 'Text item (Mock)' }
-                    ]
-                });
-            }
-            const jwt = getUserJwt(req);
-            const response = await callAdt(destinationName, jwt, {
-                method: 'GET',
-                url: '/sap/opu/odata/sap/API_BILL_OF_MATERIAL_SRV/A_BOMItemCategoryText',
-                headers: { Accept: 'application/json' }
+        if (process.env.NODE_ENV !== 'production') {
+            return res.json({
+                success: true,
+                data: [
+                    { BillOfMaterialItemCategory: 'L', Language: 'EN', BillOfMaterialItemCategoryDesc: 'Stock item (Mock)' },
+                    { BillOfMaterialItemCategory: 'N', Language: 'EN', BillOfMaterialItemCategoryDesc: 'Non-stock item (Mock)' },
+                    { BillOfMaterialItemCategory: 'T', Language: 'EN', BillOfMaterialItemCategoryDesc: 'Text item (Mock)' }
+                ]
             });
-            const results = response.data.d?.results || response.data.value || response.data;
-            res.json({ success: true, data: results });
+        }
+        try {
+            const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
+            const destinationName = req.body?.destinationName || 'T4X_011';
+            const jwt = getUserJwt(req);
+            const response = await executeHttpRequest(
+                { destinationName, jwt },
+                { method: 'GET', url: '/sap/opu/odata/sap/API_BILL_OF_MATERIAL_SRV/A_BOMItemCategoryText', headers: { Accept: 'application/json' } }
+            );
+            res.json({ success: true, data: response.data.d?.results || response.data.value || response.data });
         } catch (error) {
-            console.error('[bom-fetch] Error:', error.message);
             res.status(500).json({ error: error.message });
         }
     });
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/search — Search ABAP repository objects
+    // MCP Tool: searchObject(query, objType, max)
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/search', async (req, res) => {
         try {
             const { destinationName, query, objectType = '', maxResults = 50 } = req.body;
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
-            /* if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    data: [
-                        { name: `Z_PROG_${query.toUpperCase()}_01`, type: 'PROG', description: 'Mock ABAP Program', packageName: 'ZLOCAL' },
-                        { name: `ZCL_${query.toUpperCase()}_HANDLER`, type: 'CLAS', description: 'Mock ABAP Class', packageName: 'ZLOCAL' },
-                        { name: `ZFUNC_${query.toUpperCase()}`, type: 'FUNC', description: 'Mock Function Module', packageName: 'ZFUNC_GRP' }
-                    ]
-                });
-            } */
-
-            const jwt = 'eyJ0eXAiOiJKV1QiLCJqaWQiOiI3YkN4SXAzL0p0U01ramlJZzVFaURQMlM2NDIreG9YYXVKK2pTemhQOENzPSIsImFsZyI6IlJTMjU2Iiwiamt1IjoiaHR0cHM6Ly9yYi1idHBodWItdGFmLWQuYXV0aGVudGljYXRpb24uZXUxMC5oYW5hLm9uZGVtYW5kLmNvbS90b2tlbl9rZXlzIiwia2lkIjoiZGVmYXVsdC1qd3Qta2V5LTkzMjdiOTBiMzkifQ.eyJzdWIiOiIxNjFhOTRiNy01MDYzLTQyY2ItOGQ2MS1kODdjMDgxMjIyNmUiLCJ4cy51c2VyLmF0dHJpYnV0ZXMiOnt9LCJ1c2VyX25hbWUiOiJJWUgxSEMiLCJvcmlnaW4iOiJhMmxjOHN4cWcuYWNjb3VudHMub25kZW1hbmQuY29tIiwiaXNzIjoiaHR0cHM6Ly9yYi1idHBodWItdGFmLWQuYXV0aGVudGljYXRpb24uZXUxMC5oYW5hLm9uZGVtYW5kLmNvbS9vYXV0aC90b2tlbiIsInhzLnN5c3RlbS5hdHRyaWJ1dGVzIjp7InhzLnNhbWwuZ3JvdXBzIjpbIkJUMjIyRDBfU1lTX0RFVkVMT1BFUl9EIiwiQlQyMjJEMF9VRF9BQkFQX0RWWV9TT0ZUV0FSRV9FTkdJTkVFUiIsIkJUMjIyRDBfVURfUHJvY2Vzc0F1dG9tYXRpb25fRGV2ZWxvcGVyIiwiQlQyMjJEMF9VRF9BQkFQX0RWWV9GVU5DX0NPTlNVTFRBTlQiLCJCVDIyMkQwX1VEX0FQUExfR0VOXzEiLCJCVDIyMkQwX1VEX0J1aWxkQXBwc19EZXZlbG9wZXIiLCJCVDIyMkQwX1NZU19TVVBQT1JUX0NPTlNVTFQiXSwieHMucm9sZWNvbGxlY3Rpb25zIjpbIlJCX1NZU19TVVBQT1JUX0NPTlNVTFQiLCJSQl9VRF9Qcm9jZXNzQXV0b21hdGlvbl9EZXZlbG9wZXIiLCJSQl9VRF9BUFBMX0dFTl8xIiwiUkJfVURfQnVpbGRBcHBzX0RldmVsb3BlciIsIlJCX1NZU19ERVZFTE9QRVJfRCJdfSwiZ2l2ZW5fbmFtZSI6IkhpZW4iLCJjbGllbnRfaWQiOiJzYi1jYXAtbWNwLWFpLVJvYmVydF9Cb3NjaF9HbWJIX3JiLWJ0cGh1Yi10YWYtZC1CVDIyMkQwMCF0NTUwNjg5IiwiYXVkIjpbInNiLWNhcC1tY3AtYWktUm9iZXJ0X0Jvc2NoX0dtYkhfcmItYnRwaHViLXRhZi1kLUJUMjIyRDAwIXQ1NTA2ODkiLCJvcGVuaWQiXSwiZXh0X2F0dHIiOnsiZW5oYW5jZXIiOiJYU1VBQSIsInN1YmFjY291bnRpZCI6IjFkNmY1MWQxLTk5YmMtNGMxZC1iMDE5LTEwOGEzMDhmYTQ2MSIsInpkbiI6InJiLWJ0cGh1Yi10YWYtZCIsIm9pZGNJc3N1ZXIiOiJhMmxjOHN4cWcuYWNjb3VudHMub25kZW1hbmQuY29tIn0sInVzZXJfdXVpZCI6IjQxZGUwZTA3LWNiYzYtNDdlMi1iZTEzLTllODkwY2I4MTY1ZiIsInppZCI6IjFkNmY1MWQxLTk5YmMtNGMxZC1iMDE5LTEwOGEzMDhmYTQ2MSIsImdyYW50X3R5cGUiOiJhdXRob3JpemF0aW9uX2NvZGUiLCJ1c2VyX2lkIjoiMTYxYTk0YjctNTA2My00MmNiLThkNjEtZDg3YzA4MTIyMjZlIiwiYXpwIjoic2ItY2FwLW1jcC1haS1Sb2JlcnRfQm9zY2hfR21iSF9yYi1idHBodWItdGFmLWQtQlQyMjJEMDAhdDU1MDY4OSIsInNjb3BlIjpbIm9wZW5pZCJdLCJhdXRoX3RpbWUiOjE3NzM5MDg0MDgsImV4cCI6MTc3Mzk1MzUyMSwiZmFtaWx5X25hbWUiOiJOZ3V5ZW4gRGFjIiwiaWF0IjoxNzczOTEwMzIxLCJqdGkiOiI4MGY2NmMzYTQzMDI0M2Y2YjFhMGY1MzdkNTVhMjRmNyIsImVtYWlsIjoiaGllbi5uZ3V5ZW5kYWNAdm4uYm9zY2guY29tIiwicmV2X3NpZyI6IjY1YzU3OWRhIiwiY2lkIjoic2ItY2FwLW1jcC1haS1Sb2JlcnRfQm9zY2hfR21iSF9yYi1idHBodWItdGFmLWQtQlQyMjJEMDAhdDU1MDY4OSJ9.iKkFOO6pyLAG_gnpt1dVGLDtBodO-5luoP3-yay4LG1a1VnQqdQNucZ1xoATFkJXLpRGf3q85z4lpnVyJLceZyjEABPjm3b5g810ztwz2JmlAqCizPjEVFcb0XLEARtaoWkADGUzsk6IaLXKXYh0rQXhGEzZ3wjERbQb85XRfjYLfbrblLGYLGnuAkMAuBCPnykZosJpvlfYFJFm4fPGe57_iTQroPYNd2wiBubOG8RYH0Y9btmG6UxSNLWkynC2BhQHNzkFTUAgJMBNPdW1Ie1kHNGU8hBtUcUxlq6HbuxluJCWKeSxcBt1x5fH5pJlGWmPE_sqQZtYbB0Hi0_dSQ';//getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/search] user=${logonName}, dest=${destinationName}, query=${query}, jwt_present=${!!jwt}`);
-
-            let url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&reposistoryScope=ALL`;
-            if (objectType) url += `&objectType=${encodeURIComponent(objectType)}`;
-
-            const response = await callAdt(destinationName, jwt, {
-                method: 'GET',
-                url,
-                headers: {
-                    // ADT search result format
-                    'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml',
-                    'sap-client': process.env.SAP_CLIENT || ''
-                }
-            });
-
-            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            console.log(`[adt/search] response status=${response.status}, body_length=${xml.length}`);
-
-            // Parse ADT XML search results â€” extract object name, type, description, package
-            const objects = [];
-            // Match <adtcore:objectReference ... /> elements
-            const refPattern = /<(?:adtcore:objectReference|atom:entry)[^>]*?>/gm;
-            // Broader attribute extraction
-            const namePattern = /adtcore:name="([^"]+)"/;
-            const typePattern = /adtcore:type="([^"]+)"/;
-            const descPattern = /adtcore:description="([^"]*)"/;
-            const pkgPattern = /adtcore:packageName="([^"]*)"/;
-            const uriPattern = /adtcore:uri="([^"]*)"/;
-
-            let match;
-            while ((match = refPattern.exec(xml)) !== null) {
-                const tag = match[0];
-                const name = (namePattern.exec(tag) || [])[1];
-                const type = (typePattern.exec(tag) || [])[1];
-                if (name && type) {
-                    objects.push({
-                        name,
-                        type,
-                        description: (descPattern.exec(tag) || [])[1] || '',
-                        packageName: (pkgPattern.exec(tag) || [])[1] || '',
-                        url: (uriPattern.exec(tag) || [])[1] || ''
-                    });
-                }
+            if (process.env.NODE_ENV !== 'production') {
+                return res.json({ success: true, data: [
+                    { name: `Z_${query.toUpperCase()}_01`, type: 'PROG', description: 'Mock ABAP Program', packageName: 'ZLOCAL' }
+                ]});
             }
 
-            res.json({ success: true, data: objects });
+            const jwt = getUserJwt(req);
+            console.log(`[adt/search] query=${query}, objectType=${objectType}, maxResults=${maxResults}`);
+
+            const result = await callMcpTool('searchObject', {
+                query: query + '*',
+                objType: objectType || undefined,
+                max: maxResults
+            }, jwt);
+
+            // result.results is an array of SearchResult objects
+            const data = (result.results || []).map(r => ({
+                name: r['adtcore:name'] || r.name,
+                type: r['adtcore:type'] || r.type,
+                description: r['adtcore:description'] || r.description || '',
+                packageName: r['adtcore:packageName'] || r.packageName || '',
+                url: r['adtcore:uri'] || r.uri || ''
+            }));
+
+            res.json({ success: true, data });
         } catch (error) {
-            return handleAdtError(res, error, 'search');
+            return handleMcpError(res, error, 'search');
         }
     });
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/search-package — Search packages and their contents
+    // MCP Tool: searchPackage(packageName) for exact, searchObject for wildcard
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/search-package', async (req, res) => {
         try {
             const { destinationName, query, maxResults = 50 } = req.body;
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
             if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    data: [
-                        { name: `Z${query.toUpperCase()}`, type: 'DEVC', description: 'Mock Package 1', superPackage: '$TMP' },
-                        { name: `Z${query.toUpperCase()}_UTILS`, type: 'DEVC', description: 'Mock Package 2', superPackage: '$TMP' }
-                    ]
-                });
+                return res.json({ success: true, data: [
+                    { name: `Z${query.toUpperCase()}`, type: 'DEVC', description: 'Mock Package 1', superPackage: '$TMP' }
+                ]});
             }
 
             const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/search-package] user=${logonName}, dest=${destinationName}, query=${query}`);
-
             const isExact = !query.includes('*');
-            let objects = [];
 
-            if (!isExact) {
-                // Wildcard search: list matching packages
-                const url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}&maxResults=${maxResults}&objectType=DEVC%2FK`;
-                const response = await callAdt(destinationName, jwt, {
-                    method: 'GET',
-                    url,
-                    headers: { 'Accept': 'application/xml' }
-                });
-
-                const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-                const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
-                const namePattern = /adtcore:name="([^"]+)"/;
-                const descPattern = /adtcore:description="([^"]*)"/;
-                let match;
-                while ((match = refPattern.exec(xml)) !== null) {
-                    const tag = match[0];
-                    const name = (namePattern.exec(tag) || [])[1];
-                    if (name) objects.push({ name, type: 'DEVC', description: (descPattern.exec(tag) || [])[1] || '' });
-                }
+            let data = [];
+            if (isExact) {
+                // Exact: get package + all its contents
+                const result = await callMcpTool('searchPackage', { packageName: query }, jwt);
+                data = result.results || [];
             } else {
-                // Exact search: get package info AND its objects
-                // 1. Get the package itself
-                const pkgUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query)}&maxResults=1&objectType=DEVC%2FK`;
-                const pkgResponse = await callAdt(destinationName, jwt, {
-                    method: 'GET',
-                    url: pkgUrl,
-                    headers: { 'Accept': 'application/xml' }
-                });
-
-                let pkgXml = typeof pkgResponse.data === 'string' ? pkgResponse.data : JSON.stringify(pkgResponse.data);
-                const pkgRefPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
-                const namePattern = /adtcore:name="([^"]+)"/;
-                const descPattern = /adtcore:description="([^"]*)"/;
-                let match;
-                let pkgFound = false;
-                while ((match = pkgRefPattern.exec(pkgXml)) !== null) {
-                    const tag = match[0];
-                    const name = (namePattern.exec(tag) || [])[1];
-                    if (name && name.toUpperCase() === query.toUpperCase()) {
-                        objects.push({ name, type: 'DEVC', description: (descPattern.exec(tag) || [])[1] || '' });
-                        pkgFound = true;
-                        break;
-                    }
-                }
-
-                if (pkgFound) {
-                    // 2. Get all objects in package
-                    let limit = parseInt(maxResults, 10);
-                    if (isNaN(limit) || limit < 1) limit = 50;
-
-                    const contentsUrl = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=*&packageName=${encodeURIComponent(query)}&maxResults=${limit}`;
-                    const contentsResp = await callAdt(destinationName, jwt, {
-                        method: 'GET',
-                        url: contentsUrl,
-                        headers: { 'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml' }
-                    });
-
-                    const xml = typeof contentsResp.data === 'string' ? contentsResp.data : JSON.stringify(contentsResp.data);
-                    const refPattern = /<(?:adtcore:objectReference)[^>]*?>/gm;
-                    const typePattern = /adtcore:type="([^"]+)"/;
-                    const uriPattern = /adtcore:uri="([^"]*)"/;
-                    const pkgPattern = /adtcore:packageName="([^"]*)"/;
-
-                    while ((match = refPattern.exec(xml)) !== null) {
-                        const tag = match[0];
-                        const name = (namePattern.exec(tag) || [])[1];
-                        const type = (typePattern.exec(tag) || [])[1];
-                        if (name && type) {
-                            objects.push({
-                                name,
-                                type,
-                                description: (descPattern.exec(tag) || [])[1] || '',
-                                packageName: (pkgPattern.exec(tag) || [])[1] || query,
-                                url: (uriPattern.exec(tag) || [])[1] || ''
-                            });
-                        }
-                    }
-                }
+                // Wildcard: list matching packages only
+                const result = await callMcpTool('searchObject', {
+                    query,
+                    objType: 'DEVC/K',
+                    max: maxResults
+                }, jwt);
+                data = (result.results || []).map(r => ({
+                    name: r['adtcore:name'] || r.name,
+                    type: 'DEVC',
+                    description: r['adtcore:description'] || r.description || ''
+                }));
             }
-            res.json({ success: true, data: objects });
+
+            res.json({ success: true, data });
         } catch (error) {
-            return handleAdtError(res, error, 'search-package');
+            return handleMcpError(res, error, 'search-package');
         }
     });
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/transports — Get open transports for a package
+    // MCP Tool: transportInfo(objSourceUrl, devClass)
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/transports', async (req, res) => {
         try {
             const { destinationName, packageName } = req.body;
             if (!destinationName || !packageName) return res.status(400).json({ error: 'Missing destinationName or packageName' });
 
             if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    data: [
-                        { number: `T4XK903271`, status: 'D', description: 'Mock Transport 1', owner: 'MOCKUSER' }
-                    ]
-                });
+                return res.json({ success: true, data: [
+                    { number: 'T4XK903271', status: 'D', description: 'Mock Transport 1', owner: 'MOCKUSER' }
+                ]});
             }
 
             const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/transports] user=${logonName}, dest=${destinationName}, package=${packageName}`);
-
-            // The ADT URI for packages is typically /sap/bc/adt/packages/<packageName>
             const packageUri = `/sap/bc/adt/packages/${encodeURIComponent(packageName.toLowerCase())}`;
-            const url = `${ADT_BASE}/repository/informationsystem/objectproperties/transports?uri=${encodeURIComponent(packageUri)}`;
+            const result = await callMcpTool('transportInfo', {
+                objSourceUrl: packageUri,
+                devClass: packageName.toUpperCase()
+            }, jwt);
 
-            const response = await callAdt(destinationName, jwt, {
-                method: 'GET',
-                url,
-                headers: { 'Accept': 'application/vnd.sap.adt.repository.trproperties.result.v1+xml' }
-            });
+            // transportInfo returns transport request info
+            const transports = (result.transports || result.results || [])
+                .filter(t => t.status === 'D' || !t.status)
+                .map(t => ({
+                    number: t.number || t['trkorr'],
+                    status: t.status || 'D',
+                    description: t.description || t['as4text'] || '',
+                    owner: t.owner || t['as4user'] || ''
+                }));
 
-            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            const transports = [];
-
-            // Example XML element:
-            // <tpr:transport number="T4XK903271" description="IYH1HC packages" owner="IYH1HC" status="D" ... />
-            const refPattern = /<(?:tpr:transport)[^>]*?>/gm;
-            const numPattern = /number="([^"]+)"/;
-            const statusPattern = /status="([^"]+)"/;
-            const descPattern = /description="([^"]*)"/;
-            const ownerPattern = /owner="([^"]*)"/;
-
-            let match;
-            while ((match = refPattern.exec(xml)) !== null) {
-                const tag = match[0];
-                const status = (statusPattern.exec(tag) || [])[1];
-                if (status === 'D') {
-                    transports.push({
-                        number: (numPattern.exec(tag) || [])[1],
-                        status,
-                        description: (descPattern.exec(tag) || [])[1] || '',
-                        owner: (ownerPattern.exec(tag) || [])[1] || ''
-                    });
-                }
-            }
             res.json({ success: true, data: transports });
         } catch (error) {
-            return handleAdtError(res, error, 'transports');
+            return handleMcpError(res, error, 'transports');
         }
     });
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/create-object — Create a new ABAP object
+    // MCP Tool: createObject(objtype, name, parentName, description, parentPath, responsible, transport)
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/create-object', async (req, res) => {
         try {
             const {
                 destinationName, objectType, name, packageName,
-                description, responsible,
-                parentPath,   // URL of the parent package (e.g. /sap/bc/adt/packages/zpk_iyh1hc)
-                transport     // Transport request number (e.g. T4XK903271), auto-created if empty
+                description, responsible, parentPath, transport
             } = req.body;
             if (!destinationName || !objectType || !name || !packageName) {
                 return res.status(400).json({ error: 'Missing required fields: destinationName, objectType, name, packageName' });
             }
 
-            // Normalize objectType: CLAS/OC -> CLAS, CLAS/OCX -> CLAS, PROG/I -> PROG, etc.
+            // Normalize type: 'CLAS/OC' → 'CLAS/OC' (MCP createObject uses full type ID)
             const baseType = objectType.includes('/') ? objectType.split('/')[0] : objectType;
+            const typeIdMap = {
+                'PROG': 'PROG/P', 'CLAS': 'CLAS/OC', 'INTF': 'INTF/OI',
+                'FUGR': 'FUGR/F', 'DEVC': 'DEVC/K'
+            };
+            const objtype = typeIdMap[baseType] || objectType;
 
             if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    message: `[Mock] Object ${name} of type ${objectType} created in package ${packageName}`,
-                    objectUrl: `${ADT_BASE}/oo/classes/${name.toLowerCase()}`
-                });
+                return res.json({ success: true, message: `[Mock] Object ${name} created`, objectUrl: `/sap/bc/adt/oo/classes/${name.toLowerCase()}` });
             }
 
             const jwt = getUserJwt(req);
             const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/create-object] user=${logonName}, dest=${destinationName}, type=${objectType}(base=${baseType}), name=${name}, parentPath=${parentPath}, transport=${transport}`);
-
-            // Each object type has its own ADT URI path and XML schema
-            const typeConfig = {
-                'PROG': {
-                    uri: 'programs/programs',
-                    contentType: 'application/vnd.sap.adt.programs.programs.v2+xml',
-                    typeId: 'PROG/P',
-                    xml: (n, pkg, desc, resp, typeId) =>
-                        `<?xml version="1.0" encoding="utf-8"?>\n` +
-                        `<program:abapProgram xmlns:adtcore="http://www.sap.com/adt/core" xmlns:program="http://www.sap.com/adt/programs/programs"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}"\n` +
-                        `  program:programType="executableProgram">\n` +
-                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
-                        `</program:abapProgram>`
-                },
-                'CLAS': {
-                    uri: 'oo/classes',
-                    contentType: 'application/vnd.sap.adt.oo.classes.v4+xml',
-                    typeId: 'CLAS/OC',
-                    xml: (n, pkg, desc, resp, typeId) =>
-                        `<?xml version="1.0" encoding="utf-8"?>\n` +
-                        `<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}" class:visibility="public">\n` +
-                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
-                        `</class:abapClass>`
-                },
-                'INTF': {
-                    uri: 'oo/interfaces',
-                    contentType: 'application/vnd.sap.adt.oo.interface.v2+xml',
-                    typeId: 'INTF/OI',
-                    xml: (n, pkg, desc, resp, typeId) =>
-                        `<?xml version="1.0" encoding="utf-8"?>\n` +
-                        `<oo:interface xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
-                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
-                        `</oo:interface>`
-                },
-                'FUGR': {
-                    uri: 'functions/groups',
-                    contentType: 'application/vnd.sap.adt.functions.groups.v3+xml',
-                    typeId: 'FUGR/F',
-                    xml: (n, pkg, desc, resp, typeId) =>
-                        `<?xml version="1.0" encoding="utf-8"?>\n` +
-                        `<funcgrp:abapFunctionGroup xmlns:adtcore="http://www.sap.com/adt/core" xmlns:funcgrp="http://www.sap.com/adt/functions/groups"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
-                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
-                        `</funcgrp:abapFunctionGroup>`
-                },
-                'DEVC': {
-                    uri: 'packages',
-                    contentType: 'application/vnd.sap.adt.packages.v1+xml',
-                    typeId: 'DEVC/K',
-                    xml: (n, pkg, desc, resp, typeId) =>
-                        `<?xml version="1.0" encoding="utf-8"?>\n` +
-                        `<pak:package xmlns:adtcore="http://www.sap.com/adt/core" xmlns:pak="http://www.sap.com/adt/packages"\n` +
-                        `  adtcore:description="${desc}" adtcore:name="${n}" adtcore:type="${typeId}" adtcore:packageName="${pkg}" adtcore:responsible="${resp}">\n` +
-                        `  <adtcore:packageRef adtcore:name="${pkg}"/>\n` +
-                        `</pak:package>`
-                }
-            };
-
-            const cfg = typeConfig[baseType];
-            if (!cfg) {
-                return res.status(400).json({ error: `Unsupported object type: ${objectType} (base: ${baseType}). Supported: PROG, CLAS, INTF, FUGR, DEVC` });
-            }
+            console.log(`[adt/create-object] type=${objtype}, name=${name}, package=${packageName}`);
 
             const cleanName = name.toUpperCase();
             const cleanPkg = packageName.toUpperCase();
-            const cleanDesc = (description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
-            const cleanResp = (responsible || logonName || 'DEVELOPER').toUpperCase();
+            const pkgPath = parentPath || `/sap/bc/adt/packages/${cleanPkg.toLowerCase()}`;
 
-            const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, cleanResp, cfg.typeId);
-            console.log(`[adt/create-object] xmlBody: ${xmlBody}`);
+            const result = await callMcpTool('createObject', {
+                objtype,
+                name: cleanName,
+                parentName: cleanPkg,
+                description: description || '',
+                parentPath: pkgPath,
+                responsible: (responsible || logonName || 'DEVELOPER').toUpperCase(),
+                transport: transport || undefined
+            }, jwt);
 
-            // Append transport number if provided
-            const postUrl = transport
-                ? `${ADT_BASE}/${cfg.uri}?corrNr=${encodeURIComponent(transport)}`
-                : `${ADT_BASE}/${cfg.uri}`;
-            console.log(`[adt/create-object] POST url: ${postUrl}`);
-
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
-            const response = await callAdt(destinationName, jwt, {
-                method: 'POST',
-                url: postUrl,
-                headers: csrfHeaders(csrf, { 'Content-Type': cfg.contentType, 'Accept': '*/*' }),
-                data: xmlBody
-            });
-
-            const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
-            console.log(`[adt/create-object] created: ${objectUrl}`);
-            res.json({ success: true, objectUrl, statusCode: response.status });
+            res.json({ success: true, objectUrl: result.result || result.objectUrl || pkgPath, statusCode: 201 });
         } catch (error) {
-            return handleAdtError(res, error, 'create-object');
+            return handleMcpError(res, error, 'create-object');
         }
     });
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/lock — Lock an ABAP object for editing
+    // MCP Tool: lock(objectUrl, accessMode)
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/lock', async (req, res) => {
         try {
             const { destinationName, objectUrl, accessMode = 'MODIFY' } = req.body;
             if (!destinationName || !objectUrl) return res.status(400).json({ error: 'Missing destinationName or objectUrl' });
 
             if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    lockHandle: `MOCK_LOCK_${Date.now()}`,
-                    message: `[Mock] Object locked: ${objectUrl}`
-                });
+                return res.json({ success: true, lockHandle: `MOCK_LOCK_${Date.now()}`, message: `[Mock] Object locked: ${objectUrl}` });
             }
 
             const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/lock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
+            const result = await callMcpTool('lock', { objectUrl, accessMode }, jwt);
 
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
-            console.log(`[adt/lock] csrf=${csrf.token?.substring(0, 10)}, sending lock to: ${objectUrl}?_action=LOCK&accessMode=${accessMode}`);
-            const response = await callAdt(destinationName, jwt, {
-                method: 'POST',
-                url: `${objectUrl}?_action=LOCK&accessMode=${accessMode}`,
-                headers: csrfHeaders(csrf, {
-                    'Accept': '*/*',
-                    'X-sap-adt-sessiontype': 'stateful'
-                })
-            });
-
-            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            console.log(`[adt/lock] response xml (first 300): ${xml.substring(0, 300)}`);
-
-            // Parse lockHandle â€” ADT returns it inside <LOCK_HANDLE> or <adtlock:lockHandle>
-            let lockHandle = '';
-            const patterns = [
-                /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i,
-                /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i,
-                /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i,
-                /"LOCK_HANDLE":\s*"([^"]+)"/
-            ];
-            for (const p of patterns) {
-                const m = p.exec(xml);
-                if (m) { lockHandle = m[1].trim(); break; }
-            }
-
-            if (!lockHandle) {
-                // If XML is small and has no tags, it might be the raw handle
-                if (xml.length < 200 && !xml.includes('<')) {
-                    lockHandle = xml.trim();
-                } else {
-                    console.warn('[adt/lock] Could not parse lockHandle from xml:', xml.substring(0, 200));
-                }
-            }
-
-            // ── CRITICAL: extract session cookie from LOCK RESPONSE (not CSRF fetch) ──
-            // The ADT lock is tied to the ABAP HTTP session that processed the lock request.
-            // BTP Cloud Connector may create a new ABAP session when proxying the lock call,
-            // so the response Set-Cookie is the actual session holding the lock.
-            // If we pass the CSRF-fetch cookie to set-source, ABAP sees a different session
-            // and rejects the lock handle with 423 "invalid lock handle".
-            const lockRespSetCookie = response.headers['set-cookie'];
-            let lockSessionCookie = '';
-            if (Array.isArray(lockRespSetCookie)) {
-                lockSessionCookie = lockRespSetCookie.map(c => c.split(';')[0]).join('; ');
-            } else if (lockRespSetCookie) {
-                lockSessionCookie = lockRespSetCookie.split(';')[0];
-            }
-            const sessionCookie = lockSessionCookie || csrf.cookie;
-            console.log(`[adt/lock] lockHandle=${lockHandle}, lock_resp_cookie_len=${lockSessionCookie.length}, using_csrf_cookie=${!lockSessionCookie}`);
-            res.json({ success: true, lockHandle, sessionCookie, csrfToken: csrf.token });
+            res.json({ success: true, lockHandle: result.lockHandle, message: result.message });
         } catch (error) {
-            return handleAdtError(res, error, 'lock');
+            return handleMcpError(res, error, 'lock');
         }
     });
 
-    app.post('/api/adt/set-source', async (req, res) => {
-        try {
-            const {
-                destinationName, objectUrl, sourceUrl, source, transport
-            } = req.body;
-            if (!destinationName || !objectUrl || source === undefined) {
-                return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, source' });
-            }
-
-            if (process.env.NODE_ENV !== 'production') {
-                return res.json({ success: true, message: `[Mock] Source saved for ${objectUrl} (${source.length} chars)` });
-            }
-
-            const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-
-            // Use the sourceUrl if provided (from get-source step), otherwise resolve it
-            let targetSourceUrl = sourceUrl;
-            if (!targetSourceUrl) {
-                try {
-                    const structResp = await callAdt(destinationName, jwt, {
-                        method: 'GET', url: objectUrl,
-                        headers: { 'Accept': 'application/xml, application/*+xml' }
-                    });
-                    const structXml = typeof structResp.data === 'string' ? structResp.data : JSON.stringify(structResp.data);
-                    const m = /href="([^"]+)"[^>]*rel="[^"]*\/source[^"]*"/.exec(structXml)
-                        || /rel="[^"]*\/source[^"]*"[^>]*href="([^"]+)"/.exec(structXml);
-                    if (m) {
-                        targetSourceUrl = m[1].startsWith('/') ? m[1] : '/' + m[1];
-                    }
-                } catch (_) { }
-                if (!targetSourceUrl) targetSourceUrl = `${objectUrl}/source/main`;
-            }
-
-            console.log(`[adt/set-source] starting monolithic save sequence user=${logonName}, dest=${destinationName}, objectUrl=${objectUrl}`);
-
-            // Step 1: Get CSRF and base Session Cookie
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
-
-            // Step 2: Lock the object
-            const lockResp = await callAdt(destinationName, jwt, {
-                method: 'POST',
-                url: `${objectUrl}?_action=LOCK&accessMode=MODIFY`,
-                headers: csrfHeaders(csrf, {
-                    'Accept': 'application/xml, application/vnd.sap.adt+xml, */*',
-                    'X-sap-adt-sessiontype': 'stateful'
-                })
-            });
-
-            // Parse Lock Handle
-            const xml = typeof lockResp.data === 'string' ? lockResp.data : JSON.stringify(lockResp.data);
-            let lockHandle = '';
-            const patterns = [
-                /<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i,
-                /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i,
-                /<lockHandle[^>]*>([^<]+)<\/lockHandle>/i,
-                /"LOCK_HANDLE":\s*"([^"]+)"/
-            ];
-            for (const p of patterns) {
-                const m = p.exec(xml);
-                if (m) { lockHandle = m[1].trim(); break; }
-            }
-            if (!lockHandle && xml.length < 200 && !xml.includes('<')) lockHandle = xml.trim();
-            if (!lockHandle) throw new Error("Could not parse lock handle from ADT response");
-
-            // Extract the session cookie assigned to the Lock
-            const lockRespSetCookie = lockResp.headers['set-cookie'];
-            let lockSessionCookie = '';
-            if (Array.isArray(lockRespSetCookie)) {
-                lockSessionCookie = lockRespSetCookie.map(c => c.split(';')[0]).join('; ');
-            } else if (lockRespSetCookie) {
-                lockSessionCookie = lockRespSetCookie.split(';')[0];
-            }
-
-            // Merge the new lock session cookie with the old CSRF cookies so we don't lose Load Balancer & CSRF linkage
-            let activeCookieMap = new Map();
-            if (csrf.cookie) {
-                csrf.cookie.split(';').forEach(c => {
-                    const p = c.trim().split('=');
-                    if (p.length >= 2) activeCookieMap.set(p[0], p.slice(1).join('='));
-                });
-            }
-            if (lockSessionCookie) {
-                lockSessionCookie.split(';').forEach(c => {
-                    const p = c.trim().split('=');
-                    if (p.length >= 2) activeCookieMap.set(p[0], p.slice(1).join('='));
-                });
-            }
-            const activeCookieArray = [];
-            for (const [k, v] of activeCookieMap.entries()) {
-                activeCookieArray.push(`${k}=${v}`);
-            }
-            const activeCookie = activeCookieArray.join('; ');
-
-            const transport1 = 'T4XK903271';
-            console.log(`[adt/set-source/lock] Lock handle=${lockHandle}, TR=${transport1}, activeCookie_len=${activeCookie.length}, lockSessionCookie_len=${lockSessionCookie.length}`);
-
-            // Step 3: Set Source
-            const putUrl = `${targetSourceUrl}?lockHandle=${encodeURIComponent(lockHandle)}` +
-                (transport1 ? `&corrNr=${encodeURIComponent(transport1)}` : '');
-
-            let setSourceError = null;
-            try {
-                await callAdt(destinationName, jwt, {
-                    method: 'PUT',
-                    url: putUrl,
-                    headers: {
-                        'X-CSRF-Token': csrf.token,
-                        'Content-Type': 'text/plain; charset=utf-8',
-                        'X-sap-adt-sessiontype': 'stateful'
-                    },
-                    // Pass the lock session cookie via customRequestConfiguration so SDK does NOT strip it
-                    customRequestConfiguration: {
-                        headers: { 'Cookie': activeCookie }
-                    },
-                    data: source
-                });
-            } catch (err) {
-                const errBody = err.response?.data ? JSON.stringify(err.response.data).substring(0, 300) : '(no body)';
-                console.log(`[adt/set-source/setsource] Error=${err.message}, status=${err.response?.status}, body=${errBody}, URL=${putUrl}`);
-                setSourceError = err;
-            }
-
-            // Step 4: Unlock (Always attempt unlock even if Set Source fails)
-            const unlockUrl = `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`;
-            try {
-                await callAdt(destinationName, jwt, {
-                    method: 'POST',
-                    url: unlockUrl,
-                    headers: {
-                        'X-CSRF-Token': csrf.token,
-                        'X-sap-adt-sessiontype': 'stateful'
-                    },
-                    customRequestConfiguration: {
-                        headers: { 'Cookie': activeCookie }
-                    }
-                });
-            } catch (err) {
-                const unlockBody = err.response?.data ? JSON.stringify(err.response.data).substring(0, 200) : '(no body)';
-                console.warn(`[adt/set-source] Unlock failed: ${err.message}, status=${err.response?.status}, body=${unlockBody}`);
-            }
-
-            if (setSourceError) throw setSourceError;
-
-            res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
-
-        } catch (error) {
-            return handleAdtError(res, error, 'set-source');
-        }
-    });
-
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/unlock — Unlock an ABAP object
+    // MCP Tool: unLock(objectUrl, lockHandle)
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/unlock', async (req, res) => {
         try {
-            const { destinationName, objectUrl, lockHandle, sessionCookie, lockCsrfToken } = req.body;
+            const { destinationName, objectUrl, lockHandle } = req.body;
             if (!destinationName || !objectUrl || !lockHandle) return res.status(400).json({ error: 'Missing fields' });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -741,156 +301,18 @@ cds.on('bootstrap', (app) => {
             }
 
             const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/unlock] user=${logonName}, dest=${destinationName}, url=${objectUrl}`);
-            console.log(`[adt/unlock] => REQ.BODY: sessionCookie=${!!sessionCookie}, lockCsrfToken=${!!lockCsrfToken}`);
+            const result = await callMcpTool('unLock', { objectUrl, lockHandle }, jwt);
 
-            let csrf = { cookie: sessionCookie, token: lockCsrfToken };
-            if (!csrf.token || !csrf.cookie) {
-                csrf = await fetchAdtCsrfToken(destinationName, jwt);
-                if (sessionCookie) csrf.cookie = sessionCookie;
-            }
-
-            await callAdt(destinationName, jwt, {
-                method: 'DELETE',
-                url: `${objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-                headers: csrfHeaders(csrf)
-            });
-            res.json({ success: true, message: 'Object unlocked' });
+            res.json({ success: true, message: result.message });
         } catch (error) {
-            return handleAdtError(res, error, 'unlock');
+            return handleMcpError(res, error, 'unlock');
         }
     });
 
-    app.post('/api/adt/activate', async (req, res) => {
-        try {
-            const { destinationName, objects } = req.body;
-            // objects: Array of { name, url, type, parentUri }
-            // OR MCP_ABAP format: { 'adtcore:uri', 'adtcore:type', 'adtcore:name', 'adtcore:parentUri' }
-            if (!destinationName || !objects || !objects.length) {
-                return res.status(400).json({ error: 'Missing destinationName or objects array' });
-            }
-
-            if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    message: `[Mock] Activated ${objects.length} object(s)`,
-                    activated: objects.map(o => o.name || o['adtcore:name'])
-                });
-            }
-
-            const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-
-            // Normalize both input formats:
-            //   Simple:   { name, url, type, parentUri }
-            //   MCP_ABAP: { 'adtcore:uri', 'adtcore:type', 'adtcore:name', 'adtcore:parentUri' }
-            const normalized = objects.map(o => ({
-                name: (o.name || o['adtcore:name'] || '').toUpperCase(),
-                uri: o.url || o['adtcore:uri'] || '',
-                type: o.type || o['adtcore:type'] || '',
-                parentUri: o.parentUri || o['adtcore:parentUri'] || ''
-            }));
-
-            console.log(`[adt/activate] user=${logonName}, dest=${destinationName}, objects=${normalized.map(o => o.name).join(',')}`);
-
-            const csrf = await fetchAdtCsrfToken(destinationName, jwt);
-
-            // Build objectReferences XML — include type and parentUri if present
-            const objRefs = normalized.map(o => {
-                let attrs = `adtcore:uri="${o.uri}" adtcore:name="${o.name}"`;
-                if (o.type) attrs += ` adtcore:type="${o.type}"`;
-                if (o.parentUri) attrs += ` adtcore:parentUri="${o.parentUri}"`;
-                return `  <adtcore:objectReference ${attrs}/>`;
-            }).join('\n');
-
-            const xmlBody =
-                '<?xml version="1.0" encoding="utf-8"?>\n' +
-                '<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">\n' +
-                objRefs + '\n' +
-                '</adtcore:objectReferences>';
-
-            console.log(`[adt/activate] xml: ${xmlBody}`);
-
-            const response = await callAdt(destinationName, jwt, {
-                method: 'POST',
-                url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
-                headers: csrfHeaders(csrf, {
-                    'Content-Type': 'application/xml',
-                    'Accept': 'application/xml, */*'
-                }),
-                data: xmlBody
-            });
-
-            const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            console.log(`[adt/activate] status=${response.status}, response=${respXml.substring(0, 300)}`);
-
-            const hasError = /<[^>]*type="E"[^>]*>/i.test(respXml) || /<error/i.test(respXml);
-            res.json({
-                success: !hasError,
-                status: response.status,
-                message: hasError ? 'Activation completed with errors' : 'Activated successfully',
-                details: respXml.length < 2000 ? respXml : undefined
-            });
-        } catch (error) {
-            return handleAdtError(res, error, 'activate');
-        }
-    });
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // /api/adt/create-test-include — Create test include (CLAS/OCX) for an existing class
-    // ADT: PUT /sap/bc/adt/oo/classes/<clas>/includes/testclasses?lockHandle=<h>
-    // Must lock the class first → pass lockHandle from lock step
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    app.post('/api/adt/create-test-include', async (req, res) => {
-        try {
-            const {
-                destinationName,
-                clas,           // class name e.g. ZCL_MY_CLASS
-                lockHandle,     // from lock step
-                sessionCookie,  // from lock step
-                lockCsrfToken,  // from lock step
-                transport       // optional TR number
-            } = req.body;
-            if (!destinationName || !clas || !lockHandle) {
-                return res.status(400).json({ error: 'Missing required fields: destinationName, clas, lockHandle' });
-            }
-
-            if (process.env.NODE_ENV !== 'production') {
-                return res.json({ success: true, message: `[Mock] Test include created for ${clas}` });
-            }
-
-            const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            const cleanClas = clas.toLowerCase();
-            console.log(`[adt/create-test-include] user=${logonName}, dest=${destinationName}, clas=${cleanClas}, transport=${transport}`);
-
-            let csrf = { cookie: sessionCookie, token: lockCsrfToken };
-            if (!csrf.token || !csrf.cookie) {
-                csrf = await fetchAdtCsrfToken(destinationName, jwt);
-                if (sessionCookie) csrf.cookie = sessionCookie;
-            }
-
-            // Build URL: test class include endpoint with lockHandle
-            let putUrl = `${ADT_BASE}/oo/classes/${cleanClas}/includes/testclasses?lockHandle=${encodeURIComponent(lockHandle)}`;
-            if (transport) putUrl += `&corrNr=${encodeURIComponent(transport)}`;
-            console.log(`[adt/create-test-include] PUT url: ${putUrl}`);
-
-            await callAdt(destinationName, jwt, {
-                method: 'PUT',
-                url: putUrl,
-                headers: csrfHeaders(csrf, {
-                    'Content-Type': 'text/plain; charset=utf-8',
-                    'Accept': '*/*'
-                }),
-                data: ''  // empty body creates the test include
-            });
-            res.json({ success: true, message: `Test include created for class ${clas.toUpperCase()}` });
-        } catch (error) {
-            return handleAdtError(res, error, 'create-test-include');
-        }
-    });
-
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/get-source — Retrieve source code of an ABAP object
+    // MCP Tool: getObjectSource(objectSourceUrl)
+    // ══════════════════════════════════════════════════════════════════════════
     app.post('/api/adt/get-source', async (req, res) => {
         try {
             const { destinationName, objectUrl } = req.body;
@@ -899,76 +321,148 @@ cds.on('bootstrap', (app) => {
             if (process.env.NODE_ENV !== 'production') {
                 return res.json({
                     success: true,
-                    source: `*--------------------------------------------------------------*\n* Program: ${objectUrl.split('/').pop()}\n* Generated by MCP ADT Manager\n*--------------------------------------------------------------*\nREPORT z_example.\n\nSTART-OF-SELECTION.\n  WRITE: / 'Hello, World!'.`,
+                    source: `*------\nREPORT z_example.\nSTART-OF-SELECTION.\n  WRITE: / 'Hello, World!'.`,
                     sourceUrl: `${objectUrl}/source/main`
                 });
             }
 
             const jwt = getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
+            const sourceUrl = objectUrl.includes('/source/main') ? objectUrl : `${objectUrl}/source/main`;
+            const result = await callMcpTool('getObjectSource', { objectSourceUrl: sourceUrl }, jwt);
 
-            // Build the source URL: use /source/main directly
-            // This works for all standard ABAP object types (PROG, CLAS, INTF, FUNC)
-            // If objectUrl already contains /source/main, don't append again
-            const sourceUrl = objectUrl.includes('/source/main')
-                ? objectUrl
-                : `${objectUrl}/source/main`;
-
-            console.log(`[adt/get-source] user=${logonName}, dest=${destinationName}, url=${sourceUrl}`);
-
-            const response = await callAdt(destinationName, jwt, {
-                method: 'GET',
-                url: sourceUrl,
-                headers: { 'Accept': 'text/plain, */*' }
-            });
-            res.json({ success: true, source: response.data, sourceUrl });
+            res.json({ success: true, source: result.source, sourceUrl });
         } catch (error) {
-            return handleAdtError(res, error, 'get-source');
+            return handleMcpError(res, error, 'get-source');
         }
     });
 
-    app.post('/api/adt/save-source', async (req, res) => {
-        const { objectUrl, sourceUrl: reqSourceUrl, source, transport, destinationName } = req.body;
-        if (!objectUrl) return res.status(400).json({ error: 'Missing objectUrl' });
-        if (source === undefined || source === null) return res.status(400).json({ error: 'Missing source' });
-
-        const dest = destinationName || 'T4X_011';
-        const jwt = getUserJwt(req);
-        const user = req.authInfo?.getLogonName?.() || 'unknown';
-        const srcUrl = reqSourceUrl || `${objectUrl}/source/main`;
-        console.log(`[adt/save-source] user=${user}, dest=${dest}, url=${objectUrl}`);
-
-        if (process.env.NODE_ENV !== 'production') {
-            return res.json({ success: true, message: `[Mock] Source saved for ${objectUrl}`, sourceUrl: srcUrl });
-        }
-
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/set-source — Lock + Set source + Unlock in one sequence
+    // MCP Tools: lock → setObjectSource → unLock
+    // The MCP server maintains stateful session, so sequencing works reliably.
+    // ══════════════════════════════════════════════════════════════════════════
+    app.post('/api/adt/set-source', async (req, res) => {
         try {
-            const { adtSaveSource } = require('./adtSession');
-            const result = await adtSaveSource({
-                destName: dest,
-                userJwt: jwt,
-                objectUrl,
-                sourceUrl: srcUrl,
-                source,
-                transport,
-                log: (msg) => console.log(msg)
-            });
-            res.json({ success: true, message: 'Source saved and unlocked', sourceUrl: result.sourceUrl });
+            const { destinationName, objectUrl, sourceUrl, source, transport } = req.body;
+            if (!destinationName || !objectUrl || source === undefined) {
+                return res.status(400).json({ error: 'Missing required fields: destinationName, objectUrl, source' });
+            }
+
+            if (process.env.NODE_ENV !== 'production') {
+                return res.json({ success: true, message: `[Mock] Source saved for ${objectUrl}` });
+            }
+
+            const jwt = getUserJwt(req);
+            console.log(`[adt/set-source] Locking ${objectUrl}...`);
+
+            // Step 1: Lock
+            const lockResult = await callMcpTool('lock', { objectUrl, accessMode: 'MODIFY' }, jwt);
+            const lockHandle = lockResult.lockHandle;
+            if (!lockHandle) throw new Error('Could not obtain lock handle from MCP server');
+            console.log(`[adt/set-source] Lock handle: ${lockHandle}`);
+
+            // Step 2: Set source
+            const targetSourceUrl = sourceUrl || `${objectUrl}/source/main`;
+            let setError = null;
+            try {
+                await callMcpTool('setObjectSource', {
+                    objectSourceUrl: targetSourceUrl,
+                    source,
+                    lockHandle,
+                    transport: transport || undefined
+                }, jwt);
+            } catch (err) {
+                setError = err;
+                console.error(`[adt/set-source] Set source failed: ${err.message}`);
+            }
+
+            // Step 3: Always unlock
+            try {
+                await callMcpTool('unLock', { objectUrl, lockHandle }, jwt);
+            } catch (unlockErr) {
+                console.warn(`[adt/set-source] Unlock warning: ${unlockErr.message}`);
+            }
+
+            if (setError) throw setError;
+            res.json({ success: true, message: 'Source saved successfully', sourceUrl: targetSourceUrl });
+
         } catch (error) {
-            return handleAdtError(res, error, 'save-source');
+            return handleMcpError(res, error, 'set-source');
         }
     });
 
-    // ══════════════════════════════════════════════════════════════════════════════════
+    // Keep save-source as alias for set-source
+    app.post('/api/adt/save-source', async (req, res) => {
+        req.url = '/api/adt/set-source';
+        return app._router.handle(req, res, () => {});
+    });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/activate — Activate one or more ABAP objects
+    // MCP Tool: activate(objectName, objectUrl)
+    // ══════════════════════════════════════════════════════════════════════════
+    app.post('/api/adt/activate', async (req, res) => {
+        try {
+            const { destinationName, objects } = req.body;
+            if (!destinationName || !objects || !objects.length) {
+                return res.status(400).json({ error: 'Missing destinationName or objects array' });
+            }
+
+            if (process.env.NODE_ENV !== 'production') {
+                return res.json({ success: true, message: `[Mock] Activated ${objects.length} object(s)`, activated: objects.map(o => o.name || o['adtcore:name']) });
+            }
+
+            const jwt = getUserJwt(req);
+            const results = [];
+            // Activate each object (MCP activate handles one at a time)
+            for (const obj of objects) {
+                const name = (obj.name || obj['adtcore:name'] || '').toUpperCase();
+                const url = obj.url || obj['adtcore:uri'] || '';
+                if (!name || !url) continue;
+                try {
+                    const r = await callMcpTool('activate', { objectName: name, objectUrl: url }, jwt);
+                    results.push({ name, success: r.status === 'success' });
+                } catch (e) {
+                    results.push({ name, success: false, error: e.message });
+                }
+            }
+            const allOk = results.every(r => r.success);
+            res.json({ success: allOk, message: allOk ? 'All activated successfully' : 'Some activations failed', results });
+        } catch (error) {
+            return handleMcpError(res, error, 'activate');
+        }
+    });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // /api/adt/create-test-include — Create test include for a class
+    // MCP Tool: createTestInclude(clas, lockHandle, transport)
+    // ══════════════════════════════════════════════════════════════════════════
+    app.post('/api/adt/create-test-include', async (req, res) => {
+        try {
+            const { destinationName, clas, lockHandle, transport } = req.body;
+            if (!destinationName || !clas || !lockHandle) {
+                return res.status(400).json({ error: 'Missing required fields: destinationName, clas, lockHandle' });
+            }
+            if (process.env.NODE_ENV !== 'production') {
+                return res.json({ success: true, message: `[Mock] Test include created for ${clas}` });
+            }
+            const jwt = getUserJwt(req);
+            const result = await callMcpTool('createTestInclude', { clas, lockHandle, transport: transport || '' }, jwt);
+            res.json({ success: true, message: result.message });
+        } catch (error) {
+            return handleMcpError(res, error, 'create-test-include');
+        }
+    });
+
+    // ══════════════════════════════════════════════════════════════════════════
     // AI endpoints — powered by company RAG AI (GPT/Gemini via DIA Brain)
-    // Pattern: OAuth2 client_credentials token → DIA_HISTORY → DIA_CHAT_RAG
-    // ══════════════════════════════════════════════════════════════════════════════════
+    // toolExecutor now routes all ADT operations through MCP
+    // ══════════════════════════════════════════════════════════════════════════
     const { agenticChat, createHistory } = require('./ai-service');
 
-    // POST /api/ai/history — Create a new chat history session
     app.post('/api/ai/history', async (req, res) => {
         try {
-            const { agenticChat: _, createHistory: ch, getTokenCached } = require('./ai-service');
+            const { getTokenCached } = require('./ai-service');
             const token = await getTokenCached();
             const historyId = await createHistory(token);
             res.json({ success: true, historyId });
@@ -978,7 +472,6 @@ cds.on('bootstrap', (app) => {
         }
     });
 
-    // POST /api/ai/chat — Run agentic AI chat with ADT tool execution
     app.post('/api/ai/chat', async (req, res) => {
         const { message, historyId, destinationName } = req.body;
         if (!message) return res.status(400).json({ error: 'Missing message' });
@@ -989,195 +482,113 @@ cds.on('bootstrap', (app) => {
             const jwt = getUserJwt(req);
 
             /**
-             * Tool executor — maps tool_call names to existing ADT endpoints.
-             * The AI calls these tools by name; the server executes them
-             * using the same helpers (callAdt, csrf, etc.) already in server.js.
+             * Tool executor — maps AI tool calls to MCP tools.
+             * Destination name is passed in x-sap-destination-name header via MCP client.
              */
             const toolExecutor = async (toolName, params) => {
                 console.log(`[ai/tool] executing tool=${toolName}`);
 
                 switch (toolName) {
+                    case 'search_object':
+                        return callMcpTool('searchObject', {
+                            query: params.query,
+                            objType: params.objectType || undefined,
+                            max: params.maxResults || 50
+                        }, jwt);
 
-                    case 'search_object': {
-                        const response = await callAdt(dest, jwt, {
-                            method: 'GET',
-                            url: `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(params.query)}${params.objectType ? `&objectType=${params.objectType}` : ''}&maxResults=${params.maxResults || 50}`,
-                            headers: { 'Accept': 'application/xml, application/vnd.sap.adt.repository.informationsystem.lists.v1+xml' }
-                        });
-                        const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-                        // Parse objects from ADT search XML
-                        const items = [];
-                        const re = /adtcore:uri="([^"]*)"[^>]*adtcore:type="([^"]*)"[^>]*adtcore:name="([^"]*)"(?:[^>]*adtcore:packageName="([^"]*)")?(?:[^>]*adtcore:description="([^"]*)")?/g;
-                        let m;
-                        while ((m = re.exec(xml)) !== null) {
-                            items.push({ url: m[1], type: m[2], name: m[3], packageName: m[4] || '', description: m[5] || '' });
-                        }
-                        return { success: true, count: items.length, data: items };
-                    }
-
-                    case 'search_package': {
-                        const response = await callAdt(dest, jwt, {
-                            method: 'GET',
-                            url: `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(params.query)}&objectType=DEVC&maxResults=${params.maxResults || 20}`,
-                            headers: { 'Accept': 'application/xml, application/vnd.sap.adt.repository.informationsystem.lists.v1+xml' }
-                        });
-                        const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-                        const items = [];
-                        const re = /adtcore:uri="([^"]*)"[^>]*adtcore:type="([^"]*)"[^>]*adtcore:name="([^"]*)"(?:[^>]*adtcore:description="([^"]*)")?/g;
-                        let m;
-                        while ((m = re.exec(xml)) !== null) {
-                            if (m[2] === 'DEVC/K') {
-                                items.push({ url: m[1], name: m[3], description: m[4] || '' });
-                            }
-                        }
-                        return { success: true, count: items.length, data: items };
-                    }
+                    case 'search_package':
+                        return callMcpTool('searchPackage', {
+                            packageName: params.query || params.packageName
+                        }, jwt);
 
                     case 'get_source': {
                         const srcUrl = params.objectUrl.includes('/source/main')
-                            ? params.objectUrl
-                            : `${params.objectUrl}/source/main`;
-                        const response = await callAdt(dest, jwt, {
-                            method: 'GET', url: srcUrl,
-                            headers: { 'Accept': 'text/plain, */*' }
-                        });
-                        return { success: true, source: response.data, sourceUrl: srcUrl };
+                            ? params.objectUrl : `${params.objectUrl}/source/main`;
+                        return callMcpTool('getObjectSource', { objectSourceUrl: srcUrl }, jwt);
                     }
 
                     case 'create_object': {
-                        // Normalize type
                         const rawType = params.objectType || 'CLAS/OC';
                         const baseType = rawType.includes('/') ? rawType.split('/')[0] : rawType;
-                        const typeMap = {
-                            CLAS: {
-                                uri: 'oo/classes', ct: 'application/vnd.sap.adt.oo.classes.v4+xml',
-                                xml: (n, pkg, d, pkgPath) =>
-                                    `<?xml version="1.0" encoding="utf-8"?>\n<class:abapClass xmlns:adtcore="http://www.sap.com/adt/core" xmlns:class="http://www.sap.com/adt/oo/classes"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}" class:visibility="public">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</class:abapClass>`
-                            },
-                            PROG: {
-                                uri: 'programs/programs', ct: 'application/vnd.sap.adt.programs.programs.v2+xml',
-                                xml: (n, pkg, d, pkgPath) =>
-                                    `<?xml version="1.0" encoding="utf-8"?>\n<program:abapProgram xmlns:adtcore="http://www.sap.com/adt/core" xmlns:program="http://www.sap.com/adt/programs/programs"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}" program:programType="executableProgram">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</program:abapProgram>`
-                            },
-                            INTF: {
-                                uri: 'oo/interfaces', ct: 'application/vnd.sap.adt.oo.interface.v2+xml',
-                                xml: (n, pkg, d, pkgPath) =>
-                                    `<?xml version="1.0" encoding="utf-8"?>\n<oo:interface xmlns:adtcore="http://www.sap.com/adt/core" xmlns:oo="http://www.sap.com/adt/oo"\n  adtcore:description="${d}" adtcore:name="${n}" adtcore:packageName="${pkg}">\n${pkgPath ? `  <adtcore:packageRef adtcore:uri="${pkgPath}"/>\n` : ''}</oo:interface>`
-                            }
-                        };
-                        const cfg = typeMap[baseType];
-                        if (!cfg) throw new Error(`Unsupported objectType: ${rawType}`);
+                        const typeIdMap = { 'PROG': 'PROG/P', 'CLAS': 'CLAS/OC', 'INTF': 'INTF/OI' };
+                        const objtype = typeIdMap[baseType] || rawType;
                         const cleanName = (params.name || '').toUpperCase();
                         const cleanPkg = (params.packageName || '').toUpperCase();
-                        const cleanDesc = (params.description || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
-                        const xmlBody = cfg.xml(cleanName, cleanPkg, cleanDesc, params.parentPath || '');
-                        const postUrl = params.transport ? `${ADT_BASE}/${cfg.uri}?corrNr=${encodeURIComponent(params.transport)}` : `${ADT_BASE}/${cfg.uri}`;
-                        const csrf = await fetchAdtCsrfToken(dest, jwt);
-                        const response = await callAdt(dest, jwt, {
-                            method: 'POST', url: postUrl,
-                            headers: csrfHeaders(csrf, { 'Content-Type': cfg.ct, 'Accept': '*/*' }),
-                            data: xmlBody
-                        });
-                        const objectUrl = response.headers['location'] || `${ADT_BASE}/${cfg.uri}/${cleanName.toLowerCase()}`;
-                        return { success: true, objectUrl };
+                        return callMcpTool('createObject', {
+                            objtype,
+                            name: cleanName,
+                            parentName: cleanPkg,
+                            description: params.description || '',
+                            parentPath: params.parentPath || `/sap/bc/adt/packages/${cleanPkg.toLowerCase()}`,
+                            transport: params.transport || undefined
+                        }, jwt);
                     }
 
-                    case 'lock': {
-                        const csrf = await fetchAdtCsrfToken(dest, jwt);
-                        const response = await callAdt(dest, jwt, {
-                            method: 'POST',
-                            url: `${params.objectUrl}?_action=LOCK&accessMode=MODIFY`,
-                            headers: csrfHeaders(csrf, { 'Accept': '*/*' })
-                        });
-                        const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-                        let lockHandle = '';
-                        for (const p of [/<LOCK_HANDLE[^>]*>([^<]+)<\/LOCK_HANDLE>/i, /<adtlock:lockHandle[^>]*>([^<]+)<\/adtlock:lockHandle>/i]) {
-                            const m = p.exec(xml);
-                            if (m) { lockHandle = m[1].trim(); break; }
-                        }
-                        // Extract session cookie from lock RESPONSE (not CSRF fetch)
-                        const lockRespSetCookie = response.headers['set-cookie'];
-                        let lockSessionCookie = '';
-                        if (Array.isArray(lockRespSetCookie)) lockSessionCookie = lockRespSetCookie.map(c => c.split(';')[0]).join('; ');
-                        else if (lockRespSetCookie) lockSessionCookie = lockRespSetCookie.split(';')[0];
-                        const sessionCookie = lockSessionCookie || csrf.cookie;
-                        return { success: true, lockHandle, sessionCookie, csrfToken: csrf.token };
-                    }
+                    case 'lock':
+                        return callMcpTool('lock', {
+                            objectUrl: params.objectUrl,
+                            accessMode: params.accessMode || 'MODIFY'
+                        }, jwt);
 
                     case 'set_source': {
                         const srcUrl = params.sourceUrl || `${params.objectUrl}/source/main`;
-                        let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
-                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
-                        let putUrl = `${srcUrl}?lockHandle=${encodeURIComponent(params.lockHandle)}`;
-                        if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
-                        await callAdt(dest, jwt, {
-                            method: 'PUT', url: putUrl,
-                            headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8' }),
-                            data: params.source || ''
-                        });
-                        return { success: true, message: 'Source saved', sourceUrl: srcUrl };
+                        return callMcpTool('setObjectSource', {
+                            objectSourceUrl: srcUrl,
+                            source: params.source || '',
+                            lockHandle: params.lockHandle,
+                            transport: params.transport || undefined
+                        }, jwt);
                     }
 
                     case 'save_source': {
-                        const { adtSaveSource } = require('./adtSession');
-                        const srcUrl = params.sourceUrl || `${params.objectUrl}/source/main`;
-                        const result = await adtSaveSource({
-                            destName: dest,
-                            userJwt: jwt,
+                        const objectUrl = params.objectUrl;
+                        const source = params.source;
+                        const sourceUrl = params.sourceUrl || `${objectUrl}/source/main`;
+
+                        // Lock → Set → Unlock atomically
+                        const lockRes = await callMcpTool('lock', { objectUrl, accessMode: 'MODIFY' }, jwt);
+                        const lockHandle = lockRes.lockHandle;
+                        if (!lockHandle) throw new Error('Could not obtain lock handle');
+
+                        let setErr = null;
+                        try {
+                            await callMcpTool('setObjectSource', {
+                                objectSourceUrl: sourceUrl, source, lockHandle,
+                                transport: params.transport || undefined
+                            }, jwt);
+                        } catch (e) { setErr = e; }
+
+                        await callMcpTool('unLock', { objectUrl, lockHandle }, jwt).catch(() => {});
+                        if (setErr) throw setErr;
+                        return { status: 'success', message: 'Source saved atomically via MCP', sourceUrl };
+                    }
+
+                    case 'unlock':
+                        return callMcpTool('unLock', {
                             objectUrl: params.objectUrl,
-                            sourceUrl: srcUrl,
-                            source: params.source,
-                            log: (msg) => console.log(msg)
-                        });
-                        return { success: true, message: 'Source saved atomically via SICF', sourceUrl: result.sourceUrl };
-                    }
+                            lockHandle: params.lockHandle
+                        }, jwt);
 
-                    case 'unlock': {
-                        let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
-                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
-                        await callAdt(dest, jwt, {
-                            method: 'DELETE',
-                            url: `${params.objectUrl}?_action=UNLOCK&lockHandle=${encodeURIComponent(params.lockHandle)}`,
-                            headers: csrfHeaders(csrf)
-                        });
-                        return { success: true, message: 'Object unlocked' };
-                    }
+                    case 'activate':
+                        // Activate first object if AI passes an array
+                        if (params.objects && params.objects.length) {
+                            const obj = params.objects[0];
+                            return callMcpTool('activate', {
+                                objectName: (obj.name || obj['adtcore:name'] || '').toUpperCase(),
+                                objectUrl: obj.url || obj['adtcore:uri'] || ''
+                            }, jwt);
+                        }
+                        return callMcpTool('activate', {
+                            objectName: (params.objectName || '').toUpperCase(),
+                            objectUrl: params.objectUrl || ''
+                        }, jwt);
 
-                    case 'activate': {
-                        const csrf = await fetchAdtCsrfToken(dest, jwt);
-                        const normalized = (params.objects || []).map(o => ({
-                            uri: o.url || o['adtcore:uri'] || '',
-                            name: (o.name || o['adtcore:name'] || '').toUpperCase(),
-                            type: o.type || o['adtcore:type'] || '',
-                            parentUri: o.parentUri || o['adtcore:parentUri'] || ''
-                        }));
-                        const objRefs = normalized.map(o => {
-                            let attrs = `adtcore:uri="${o.uri}" adtcore:name="${o.name}"`;
-                            if (o.type) attrs += ` adtcore:type="${o.type}"`;
-                            if (o.parentUri) attrs += ` adtcore:parentUri="${o.parentUri}"`;
-                            return `  <adtcore:objectReference ${attrs}/>`;
-                        }).join('\n');
-                        const xmlBody = `<?xml version="1.0" encoding="utf-8"?>\n<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">\n${objRefs}\n</adtcore:objectReferences>`;
-                        const response = await callAdt(dest, jwt, {
-                            method: 'POST',
-                            url: `${ADT_BASE}/activation/activate?method=activate&preauditRequested=false`,
-                            headers: csrfHeaders(csrf, { 'Content-Type': 'application/xml', 'Accept': 'application/xml, */*' }),
-                            data: xmlBody
-                        });
-                        const respXml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-                        const hasError = /<[^>]*type="E"[^>]*>/i.test(respXml) || /<error/i.test(respXml);
-                        return { success: !hasError, message: hasError ? 'Activation completed with errors' : 'Activated successfully' };
-                    }
-
-                    case 'create_test_include': {
-                        const cleanClas = (params.clas || '').toLowerCase();
-                        let csrf = { cookie: params.sessionCookie, token: params.lockCsrfToken };
-                        if (!csrf.token || !csrf.cookie) csrf = await fetchAdtCsrfToken(dest, jwt);
-                        let putUrl = `${ADT_BASE}/oo/classes/${cleanClas}/includes/testclasses?lockHandle=${encodeURIComponent(params.lockHandle)}`;
-                        if (params.transport) putUrl += `&corrNr=${encodeURIComponent(params.transport)}`;
-                        await callAdt(dest, jwt, { method: 'PUT', url: putUrl, headers: csrfHeaders(csrf, { 'Content-Type': 'text/plain; charset=utf-8' }), data: '' });
-                        return { success: true, message: `Test include created for ${(params.clas || '').toUpperCase()}` };
-                    }
+                    case 'create_test_include':
+                        return callMcpTool('createTestInclude', {
+                            clas: params.clas || '',
+                            lockHandle: params.lockHandle,
+                            transport: params.transport || ''
+                        }, jwt);
 
                     default:
                         throw new Error(`Unknown tool: ${toolName}`);
