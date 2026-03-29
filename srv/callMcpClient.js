@@ -12,7 +12,7 @@ const http = require('http');
 const { exec } = require('child_process');
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────────
-const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'https://test.cfapps.cf10.hana.ondemand.com/mcp';
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'https://robert-bosch-gmbh-rb-btphub-taf-d-bt222d00-abap-mcp-server.cfapps.eu10-004.hana.ondemand.com/mcp';
 const MCP_OAUTH_BASE = MCP_SERVER_URL.replace('/mcp', ''); // e.g. https://test.cfapps.cf10.hana.ondemand.com
 const LOCAL_CALLBACK_PORT = process.env.MCP_CALLBACK_PORT || 3099;
 
@@ -156,7 +156,7 @@ function openBrowser(url) {
     const platform = process.platform;
     const cmd = platform === 'win32' ? `start "" "${url}"`
         : platform === 'darwin' ? `open "${url}"`
-        : `xdg-open "${url}"`;
+            : `xdg-open "${url}"`;
     exec(cmd, (err) => {
         if (err) console.error('[McpClient] Failed to open browser:', err.message);
     });
