@@ -1,4 +1,5 @@
 const cds = require('@sap/cds');
+const { callTool } = require('./callMcpClient');
 
 cds.on('bootstrap', (app) => {
     if (process.env.NODE_ENV === 'production') {
@@ -155,72 +156,57 @@ cds.on('bootstrap', (app) => {
             const { destinationName, query, objectType = '', maxResults = 50 } = req.body;
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
-            /* if (process.env.NODE_ENV !== 'production') {
-                return res.json({
-                    success: true,
-                    data: [
-                        { name: `Z_PROG_${query.toUpperCase()}_01`, type: 'PROG', description: 'Mock ABAP Program', packageName: 'ZLOCAL' },
-                        { name: `ZCL_${query.toUpperCase()}_HANDLER`, type: 'CLAS', description: 'Mock ABAP Class', packageName: 'ZLOCAL' },
-                        { name: `ZFUNC_${query.toUpperCase()}`, type: 'FUNC', description: 'Mock Function Module', packageName: 'ZFUNC_GRP' }
-                    ]
-                });
-            } */
+            // Identify user — in prod: from XSUAA token; in local dev: fallback to 'dev-user'
+            const userId = req.authInfo?.getLogonName?.() || 'dev-user';
+            console.log(`[adt/search] user=${userId}, dest=${destinationName}, query=${query}`);
 
-            const jwt = 'eyJ0eXAiOiJKV1QiLCJqaWQiOiI3YkN4SXAzL0p0U01ramlJZzVFaURQMlM2NDIreG9YYXVKK2pTemhQOENzPSIsImFsZyI6IlJTMjU2Iiwiamt1IjoiaHR0cHM6Ly9yYi1idHBodWItdGFmLWQuYXV0aGVudGljYXRpb24uZXUxMC5oYW5hLm9uZGVtYW5kLmNvbS90b2tlbl9rZXlzIiwia2lkIjoiZGVmYXVsdC1qd3Qta2V5LTkzMjdiOTBiMzkifQ.eyJzdWIiOiIxNjFhOTRiNy01MDYzLTQyY2ItOGQ2MS1kODdjMDgxMjIyNmUiLCJ4cy51c2VyLmF0dHJpYnV0ZXMiOnt9LCJ1c2VyX25hbWUiOiJJWUgxSEMiLCJvcmlnaW4iOiJhMmxjOHN4cWcuYWNjb3VudHMub25kZW1hbmQuY29tIiwiaXNzIjoiaHR0cHM6Ly9yYi1idHBodWItdGFmLWQuYXV0aGVudGljYXRpb24uZXUxMC5oYW5hLm9uZGVtYW5kLmNvbS9vYXV0aC90b2tlbiIsInhzLnN5c3RlbS5hdHRyaWJ1dGVzIjp7InhzLnNhbWwuZ3JvdXBzIjpbIkJUMjIyRDBfU1lTX0RFVkVMT1BFUl9EIiwiQlQyMjJEMF9VRF9BQkFQX0RWWV9TT0ZUV0FSRV9FTkdJTkVFUiIsIkJUMjIyRDBfVURfUHJvY2Vzc0F1dG9tYXRpb25fRGV2ZWxvcGVyIiwiQlQyMjJEMF9VRF9BQkFQX0RWWV9GVU5DX0NPTlNVTFRBTlQiLCJCVDIyMkQwX1VEX0FQUExfR0VOXzEiLCJCVDIyMkQwX1VEX0J1aWxkQXBwc19EZXZlbG9wZXIiLCJCVDIyMkQwX1NZU19TVVBQT1JUX0NPTlNVTFQiXSwieHMucm9sZWNvbGxlY3Rpb25zIjpbIlJCX1NZU19TVVBQT1JUX0NPTlNVTFQiLCJSQl9VRF9Qcm9jZXNzQXV0b21hdGlvbl9EZXZlbG9wZXIiLCJSQl9VRF9BUFBMX0dFTl8xIiwiUkJfVURfQnVpbGRBcHBzX0RldmVsb3BlciIsIlJCX1NZU19ERVZFTE9QRVJfRCJdfSwiZ2l2ZW5fbmFtZSI6IkhpZW4iLCJjbGllbnRfaWQiOiJzYi1jYXAtbWNwLWFpLVJvYmVydF9Cb3NjaF9HbWJIX3JiLWJ0cGh1Yi10YWYtZC1CVDIyMkQwMCF0NTUwNjg5IiwiYXVkIjpbInNiLWNhcC1tY3AtYWktUm9iZXJ0X0Jvc2NoX0dtYkhfcmItYnRwaHViLXRhZi1kLUJUMjIyRDAwIXQ1NTA2ODkiLCJvcGVuaWQiXSwiZXh0X2F0dHIiOnsiZW5oYW5jZXIiOiJYU1VBQSIsInN1YmFjY291bnRpZCI6IjFkNmY1MWQxLTk5YmMtNGMxZC1iMDE5LTEwOGEzMDhmYTQ2MSIsInpkbiI6InJiLWJ0cGh1Yi10YWYtZCIsIm9pZGNJc3N1ZXIiOiJhMmxjOHN4cWcuYWNjb3VudHMub25kZW1hbmQuY29tIn0sInVzZXJfdXVpZCI6IjQxZGUwZTA3LWNiYzYtNDdlMi1iZTEzLTllODkwY2I4MTY1ZiIsInppZCI6IjFkNmY1MWQxLTk5YmMtNGMxZC1iMDE5LTEwOGEzMDhmYTQ2MSIsImdyYW50X3R5cGUiOiJhdXRob3JpemF0aW9uX2NvZGUiLCJ1c2VyX2lkIjoiMTYxYTk0YjctNTA2My00MmNiLThkNjEtZDg3YzA4MTIyMjZlIiwiYXpwIjoic2ItY2FwLW1jcC1haS1Sb2JlcnRfQm9zY2hfR21iSF9yYi1idHBodWItdGFmLWQtQlQyMjJEMDAhdDU1MDY4OSIsInNjb3BlIjpbIm9wZW5pZCJdLCJhdXRoX3RpbWUiOjE3NzM5MDg0MDgsImV4cCI6MTc3Mzk1MzUyMSwiZmFtaWx5X25hbWUiOiJOZ3V5ZW4gRGFjIiwiaWF0IjoxNzczOTEwMzIxLCJqdGkiOiI4MGY2NmMzYTQzMDI0M2Y2YjFhMGY1MzdkNTVhMjRmNyIsImVtYWlsIjoiaGllbi5uZ3V5ZW5kYWNAdm4uYm9zY2guY29tIiwicmV2X3NpZyI6IjY1YzU3OWRhIiwiY2lkIjoic2ItY2FwLW1jcC1haS1Sb2JlcnRfQm9zY2hfR21iSF9yYi1idHBodWItdGFmLWQtQlQyMjJEMDAhdDU1MDY4OSJ9.iKkFOO6pyLAG_gnpt1dVGLDtBodO-5luoP3-yay4LG1a1VnQqdQNucZ1xoATFkJXLpRGf3q85z4lpnVyJLceZyjEABPjm3b5g810ztwz2JmlAqCizPjEVFcb0XLEARtaoWkADGUzsk6IaLXKXYh0rQXhGEzZ3wjERbQb85XRfjYLfbrblLGYLGnuAkMAuBCPnykZosJpvlfYFJFm4fPGe57_iTQroPYNd2wiBubOG8RYH0Y9btmG6UxSNLWkynC2BhQHNzkFTUAgJMBNPdW1Ie1kHNGU8hBtUcUxlq6HbuxluJCWKeSxcBt1x5fH5pJlGWmPE_sqQZtYbB0Hi0_dSQ';//getUserJwt(req);
-            const logonName = req.authInfo?.getLogonName?.() || 'unknown';
-            console.log(`[adt/search] user=${logonName}, dest=${destinationName}, query=${query}, jwt_present=${!!jwt}`);
-
-            let url = `${ADT_BASE}/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(query + '*')}&maxResults=${maxResults}&reposistoryScope=ALL`;
-            if (objectType) url += `&objectType=${encodeURIComponent(objectType)}`;
-
-            const response = await callAdt(destinationName, jwt, {
-                method: 'GET',
-                url,
-                headers: {
-                    // ADT search result format
-                    'Accept': 'application/vnd.sap.adt.repository.informationsystem.search.result.v1+xml, application/xml',
-                    'sap-client': process.env.SAP_CLIENT || ''
-                }
+            // Call MCP Tool → callMcpClient handles JWT + Session lifecycle automatically
+            const mcpResult = await callTool(userId, destinationName, 'searchObject', {
+                query: query + '*',
+                maxResults,
+                ...(objectType ? { objectType } : {})
             });
 
-            const xml = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-            console.log(`[adt/search] response status=${response.status}, body_length=${xml.length}`);
-
-            // Parse ADT XML search results â€” extract object name, type, description, package
-            const objects = [];
-            // Match <adtcore:objectReference ... /> elements
-            const refPattern = /<(?:adtcore:objectReference|atom:entry)[^>]*?>/gm;
-            // Broader attribute extraction
-            const namePattern = /adtcore:name="([^"]+)"/;
-            const typePattern = /adtcore:type="([^"]+)"/;
-            const descPattern = /adtcore:description="([^"]*)"/;
-            const pkgPattern = /adtcore:packageName="([^"]*)"/;
-            const uriPattern = /adtcore:uri="([^"]*)"/;
-
-            let match;
-            while ((match = refPattern.exec(xml)) !== null) {
-                const tag = match[0];
-                const name = (namePattern.exec(tag) || [])[1];
-                const type = (typePattern.exec(tag) || [])[1];
-                if (name && type) {
-                    objects.push({
-                        name,
-                        type,
-                        description: (descPattern.exec(tag) || [])[1] || '',
-                        packageName: (pkgPattern.exec(tag) || [])[1] || '',
-                        url: (uriPattern.exec(tag) || [])[1] || ''
-                    });
-                }
+            // MCP returns: { jsonrpc, id, result: { content: [{ type: 'text', text: '...' }] } }
+            const contentText = mcpResult?.result?.content?.[0]?.text;
+            if (!contentText) {
+                console.warn('[adt/search] MCP returned empty content:', JSON.stringify(mcpResult).substring(0, 300));
+                return res.json({ success: true, data: [] });
             }
 
+            // MCP tool result is JSON-stringified by AbapAdtServer.serializeResult()
+            let parsed;
+            try {
+                parsed = JSON.parse(contentText);
+            } catch {
+                console.error('[adt/search] Failed to parse MCP content text:', contentText.substring(0, 300));
+                return res.status(500).json({ error: 'Failed to parse MCP response' });
+            }
+
+            // Map MCP searchObject result to the existing format expected by the UI
+            // abap-adt-api searchObject returns an array of objects with: name, type, description, packageName, uri
+            const objects = Array.isArray(parsed)
+                ? parsed.map(o => ({
+                    name: o.name || o['adtcore:name'] || '',
+                    type: o.type || o['adtcore:type'] || '',
+                    description: o.description || o['adtcore:description'] || '',
+                    packageName: o.packageName || o['adtcore:packageName'] || '',
+                    url: o.uri || o['adtcore:uri'] || ''
+                }))
+                : [];
+
+            console.log(`[adt/search] MCP returned ${objects.length} objects`);
             res.json({ success: true, data: objects });
+
         } catch (error) {
-            return handleAdtError(res, error, 'search');
+            console.error('[adt/search] Error:', error.message);
+            return res.status(error.statusCode || 500).json({ error: error.message });
         }
     });
 
     app.post('/api/adt/search-package', async (req, res) => {
         try {
+
             const { destinationName, query, maxResults = 50 } = req.body;
             if (!destinationName || !query) return res.status(400).json({ error: 'Missing destinationName or query' });
 
