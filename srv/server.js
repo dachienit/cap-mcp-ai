@@ -171,6 +171,11 @@ cds.on('bootstrap', (app) => {
             const resultData = mcpResult?.result || mcpResult;
             const contentText = resultData?.content?.[0]?.text;
             
+            // DEBUG - xóa sau khi fix xong
+            console.log('[DEBUG] mcpResult keys:', Object.keys(mcpResult || {}));
+            console.log('[DEBUG] resultData keys:', Object.keys(resultData || {}));
+            console.log('[DEBUG] contentText (first 200):', contentText?.substring(0, 200));
+
             if (!contentText) {
                 console.warn('[adt/search] MCP returned no content text. Full response:', JSON.stringify(mcpResult).substring(0, 500));
                 return res.json({ success: true, data: [] });
@@ -187,6 +192,8 @@ cds.on('bootstrap', (app) => {
 
             // Map MCP searchObject result to the existing format expected by the UI
             // The tool returns { status, results: [...], message }
+            console.log('[DEBUG] parsed keys:', Object.keys(parsed || {}));
+            console.log('[DEBUG] parsed.results length:', Array.isArray(parsed.results) ? parsed.results.length : 'NOT ARRAY');
             const rawResults = Array.isArray(parsed) ? parsed : (parsed.results || []);
             const objects = rawResults.map(o => ({
                 name: o['adtcore:name'] || o.name || '',
