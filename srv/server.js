@@ -184,16 +184,15 @@ cds.on('bootstrap', (app) => {
             }
 
             // Map MCP searchObject result to the existing format expected by the UI
-            // abap-adt-api searchObject returns an array of objects with: name, type, description, packageName, uri
-            const objects = Array.isArray(parsed)
-                ? parsed.map(o => ({
-                    name: o.name || o['adtcore:name'] || '',
-                    type: o.type || o['adtcore:type'] || '',
-                    description: o.description || o['adtcore:description'] || '',
-                    packageName: o.packageName || o['adtcore:packageName'] || '',
-                    url: o.uri || o['adtcore:uri'] || ''
-                }))
-                : [];
+            // The tool returns { status, results: [...], message }
+            const rawResults = Array.isArray(parsed) ? parsed : (parsed.results || []);
+            const objects = rawResults.map(o => ({
+                name: o['adtcore:name'] || o.name || '',
+                type: o['adtcore:type'] || o.type || '',
+                description: o['adtcore:description'] || o.description || '',
+                packageName: o['adtcore:packageName'] || o.packageName || '',
+                url: o['adtcore:uri'] || o.uri || o.url || ''
+            }));
 
             console.log(`[adt/search] MCP returned ${objects.length} objects`);
             res.json({ success: true, data: objects });
