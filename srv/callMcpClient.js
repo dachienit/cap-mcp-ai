@@ -16,6 +16,42 @@ const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'https://robert-bosch-gmbh-
 const MCP_OAUTH_BASE = MCP_SERVER_URL.replace('/mcp', ''); // e.g. https://test.cfapps.cf10.hana.ondemand.com
 const LOCAL_CALLBACK_PORT = process.env.MCP_CALLBACK_PORT || 3099;
 
+// ─── BAS HELPERS ───────────────────────────────────────────────────────────────
+
+/**
+ * Construct the callback URI based on the current environment.
+ * If running in SAP BAS, it uses the workspace's public URL for port forwarding.
+ */
+function getCallbackUri() {
+    if (process.env.H_HOSTNAME) {
+        // SAP BAS Environment
+        return `https://port${LOCAL_CALLBACK_PORT}-${process.env.H_HOSTNAME}.applicationstudio.cloud.sap/mcp-callback`;
+    }
+    // Local Environment
+    return `http://localhost:${LOCAL_CALLBACK_PORT}/mcp-callback`;
+}
+
+/**
+ * Handle browser opening based on environment.
+ */
+function notifyUserToLogin(authUrl) {
+    if (process.env.H_HOSTNAME) {
+        // On BAS, we can't open a browser window on the user's host.
+        // We print a clear banner so the user can click the link in the terminal.
+        console.log("\n" + "=".repeat(80));
+        console.log("🔑 MCP AUTHENTICATION REQUIRED");
+        console.log("=".repeat(80));
+        console.log("You are running in SAP Business Application Studio.");
+        console.log("Please click the link below to sign in via Bosch SSO:");
+        console.log("\n" + authUrl + "\n");
+        console.log("Note: After successful login, this terminal will automatically continue.");
+        console.log("=".repeat(80) + "\n");
+    } else {
+        // Local: Auto-open the OS default browser
+        openBrowser(authUrl);
+    }
+}
+
 // ─── IN-MEMORY SESSION STORE ────────────────────────────────────────────────────
 // Structure:
 // userCache = {
@@ -133,11 +169,11 @@ async function acquireTokenViaBrowser() {
             }
         });
 
-        server = app.listen(LOCAL_CALLBACK_PORT, () => {
-            const callbackUri = `http://localhost:${LOCAL_CALLBACK_PORT}/mcp-callback`;
+        server = app.listen(LOCAL_CALLBACK_PORT, '0.0.0.0', () => {
+            const callbackUri = getCallbackUri();
             const authUrl = `${MCP_OAUTH_BASE}/oauth/authorize?redirect_uri=${encodeURIComponent(callbackUri)}`;
-            console.log(`[McpClient] Opening browser: ${authUrl}`);
-            openBrowser(authUrl);
+            console.log(`[McpClient] Login server listening on port ${LOCAL_CALLBACK_PORT}`);
+            notifyUserToLogin(authUrl);
         });
 
         server.on('error', (err) => {
@@ -164,7 +200,7 @@ function openBrowser(url) {
 
 async function exchangeCodeForToken(code) {
     const fetch = (await import('node-fetch')).default;
-    const callbackUri = `http://localhost:${LOCAL_CALLBACK_PORT}/mcp-callback`;
+    const callbackUri = getCallbackUri();
 
     const resp = await fetch(`${MCP_OAUTH_BASE}/oauth/token`, {
         method: 'POST',
