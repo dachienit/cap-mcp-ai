@@ -167,10 +167,12 @@ cds.on('bootstrap', (app) => {
                 ...(objectType ? { objectType } : {})
             });
 
-            // MCP returns: { jsonrpc, id, result: { content: [{ type: 'text', text: '...' }] } }
-            const contentText = mcpResult?.result?.content?.[0]?.text;
+            // MCP returns: { jsonrpc, id, result: { content: [...] } } OR directly { content: [...] }
+            const resultData = mcpResult?.result || mcpResult;
+            const contentText = resultData?.content?.[0]?.text;
+            
             if (!contentText) {
-                console.warn('[adt/search] MCP returned empty content:', JSON.stringify(mcpResult).substring(0, 300));
+                console.warn('[adt/search] MCP returned no content text. Full response:', JSON.stringify(mcpResult).substring(0, 500));
                 return res.json({ success: true, data: [] });
             }
 
