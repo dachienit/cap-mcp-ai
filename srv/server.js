@@ -162,7 +162,7 @@ cds.on('bootstrap', (app) => {
 
             // Call MCP Tool → callMcpClient handles JWT + Session lifecycle automatically
             const mcpResult = await callTool(userId, destinationName, 'searchObject', {
-                query: query + '*',
+                query: query,
                 maxResults,
                 ...(objectType ? { objectType } : {})
             });
@@ -170,11 +170,6 @@ cds.on('bootstrap', (app) => {
             // MCP returns: { jsonrpc, id, result: { content: [...] } } OR directly { content: [...] }
             const resultData = mcpResult?.result || mcpResult;
             const contentText = resultData?.content?.[0]?.text;
-            
-            // DEBUG - xóa sau khi fix xong
-            console.log('[DEBUG] mcpResult keys:', Object.keys(mcpResult || {}));
-            console.log('[DEBUG] resultData keys:', Object.keys(resultData || {}));
-            console.log('[DEBUG] contentText (first 200):', contentText?.substring(0, 200));
 
             if (!contentText) {
                 console.warn('[adt/search] MCP returned no content text. Full response:', JSON.stringify(mcpResult).substring(0, 500));
