@@ -23,9 +23,12 @@ const LOCAL_CALLBACK_PORT = process.env.MCP_CALLBACK_PORT || 3099;
  * If running in SAP BAS, it uses the workspace's public URL for port forwarding.
  */
 function getCallbackUri() {
-    if (process.env.H_HOSTNAME) {
+    if (process.env.WS_BASE_URL) {
         // SAP BAS Environment
-        return `https://port${LOCAL_CALLBACK_PORT}-${process.env.H_HOSTNAME}.applicationstudio.cloud.sap/mcp-callback`;
+        // Example: https://workspaces-ws-g41xm.eu10.applicationstudio.cloud.sap/
+        // To callback on port 3099, we need: https://port3099-workspaces-ws-g41xm.eu10.applicationstudio.cloud.sap/mcp-callback
+        const baseUrl = process.env.WS_BASE_URL.replace('https://', '');
+        return `https://port${LOCAL_CALLBACK_PORT}-${baseUrl}mcp-callback`.replace('//', '/');
     }
     // Local Environment
     return `http://localhost:${LOCAL_CALLBACK_PORT}/mcp-callback`;
@@ -35,7 +38,7 @@ function getCallbackUri() {
  * Handle browser opening based on environment.
  */
 function notifyUserToLogin(authUrl) {
-    if (process.env.H_HOSTNAME) {
+    if (process.env.WS_BASE_URL) {
         // On BAS, we can't open a browser window on the user's host.
         // We print a clear banner so the user can click the link in the terminal.
         console.log("\n" + "=".repeat(80));
