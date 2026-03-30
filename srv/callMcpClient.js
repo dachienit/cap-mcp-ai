@@ -233,6 +233,7 @@ async function initializeMcpSession(jwt, destinationName) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
             'Authorization': `Bearer ${jwt}`,
             'x-sap-destination-name': destinationName
         },
@@ -272,6 +273,7 @@ async function callMcpTool(jwt, sessionId, destinationName, toolName, toolArgs =
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
             'Authorization': `Bearer ${jwt}`,
             'mcp-session-id': sessionId,
             'x-sap-destination-name': destinationName
