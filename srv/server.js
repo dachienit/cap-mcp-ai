@@ -190,11 +190,19 @@ cds.on('bootstrap', (app) => {
                 return res.status(500).json({ error: 'Failed to parse MCP response' });
             }
 
-            // Map MCP searchObject result to the existing format expected by the UI
-            // The tool returns { status, results: [...], message }
-            console.log('[DEBUG] parsed keys:', Object.keys(parsed || {}));
-            console.log('[DEBUG] parsed.results length:', Array.isArray(parsed.results) ? parsed.results.length : 'NOT ARRAY');
-            const rawResults = Array.isArray(parsed) ? parsed : (parsed.results || []);
+            // Handle double-nested JSON:
+            // Layer 1: { content: [{ type: 'text', text: '{ "status": ..., "results": [...] }' }] }
+            // Layer 2: { status, results: [...], message }
+            let innerData = parsed;
+            if (parsed?.content?.[0]?.text) {
+                try {
+                    innerData = JSON.parse(parsed.content[0].text);
+                } catch {
+                    console.error('[adt/search] Failed to parse inner content text');
+                }
+            }
+
+            const rawResults = Array.isArray(innerData) ? innerData : (innerData.results || []);
             const objects = rawResults.map(o => ({
                 name: o['adtcore:name'] || o.name || '',
                 type: o['adtcore:type'] || o.type || '',
