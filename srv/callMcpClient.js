@@ -294,6 +294,24 @@ async function callMcpTool(jwt, sessionId, destinationName, toolName, toolArgs =
         throw err;
     }
 
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('text/event-stream')) {
+        const text = await resp.text();
+        // Each event is like: "data: {\"jsonrpc\":\"2.0\",...}\n\n"
+        const lines = text.split('\n');
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    const json = JSON.parse(line.slice(6));
+                    if (json.result || json.error) return json;
+                } catch (e) {
+                    // Ignore malformed lines in stream
+                }
+            }
+        }
+        throw new Error('MCP tool call succeeded but no result found in the event stream');
+    }
+
     return resp.json();
 }
 
